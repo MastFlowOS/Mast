@@ -933,12 +933,24 @@ async fn refresh_ig_watcher(
     app: AppHandle,
     ig_state: State<'_, IgWatcherState>,
 ) -> Result<IgWatcherStatus, String> {
+    let needs_login = ig_state
+        .inner
+        .lock()
+        .map(|g| g.state == "needs_login")
+        .unwrap_or(false);
+
     if let Some(win) = app.get_webview_window(IG_WATCHER_LABEL) {
-        let _ = win.eval(
-            "if (location.hostname.endsWith('instagram.com') && !location.pathname.startsWith('/accounts') && !location.pathname.startsWith('/challenge')) { location.href = 'https://www.instagram.com/direct/inbox/'; }",
-        );
+        if needs_login {
+            let _ = win.show();
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+        } else {
+            let _ = win.eval(
+                "if (location.pathname.startsWith('/direct') && typeof window.__mastIgScanNow === 'function') { window.__mastIgScanNow(true); } else if (location.hostname.endsWith('instagram.com') && !location.pathname.startsWith('/accounts') && !location.pathname.startsWith('/challenge')) { location.href = 'https://www.instagram.com/direct/inbox/'; }",
+            );
+        }
     } else if ig_state.inner.lock().map(|g| g.enabled).unwrap_or(false) {
-        let _ = create_or_show_watcher(&app, &ig_state, false, false);
+        let _ = create_or_show_watcher(&app, &ig_state, needs_login, needs_login);
     }
     Ok(ig_state.snapshot(&app))
 }

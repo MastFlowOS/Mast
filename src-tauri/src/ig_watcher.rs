@@ -228,15 +228,34 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       path.startsWith("/accounts/signup") ||
       path.startsWith("/challenge") ||
       path.startsWith("/two_factor") ||
-      path.startsWith("/accounts/suspended") ||
-      path.startsWith("/consent")
+      path.startsWith("/accounts/suspended")
     ) {
       return true;
     }
-    if (document.querySelector('input[name="username"], form#loginForm')) {
+    if (document.querySelector('input[name="username"], input[name="password"], form#loginForm')) {
       return true;
     }
     return false;
+  }
+
+  function isAuthTransitionPage() {
+    const path = (window.location.pathname || "").toLowerCase();
+    return (
+      path.startsWith("/accounts/onetap") ||
+      path.startsWith("/accounts/") ||
+      path.startsWith("/consent") ||
+      path.startsWith("/privacy")
+    );
+  }
+
+  function hasLoggedInInboxDom() {
+    if (document.querySelector('input[name="username"], input[name="password"], form#loginForm')) {
+      return false;
+    }
+    // Verify IG actually rendered the signed-in app shell / DM view
+    return Boolean(
+      document.querySelector('[role="navigation"], [role="list"], a[href*="/direct/"]')
+    );
   }
 
   function extractHandleFromElement(row) {
@@ -281,26 +300,44 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     return false;
   }
 
-  function scanVisibleThreads() {
+  function scanVisibleThreads(forceReport = false) {
     if (isLoginOrChallenge()) {
-      if (lastReportedState !== "needs_login") {
+      if (forceReport || lastReportedState !== "needs_login") {
         lastReportedState = "needs_login";
         invokeReport("needs_login", []);
       }
       return;
     }
 
+    if (isAuthTransitionPage()) {
+      // Wait for user/IG to finish "Save login info?" (onetap) or consent without
+      // interrupting cookies or falsely marking connected yet.
+      if (forceReport || lastReportedState !== "starting") {
+        lastReportedState = "starting";
+        invokeReport("starting", []);
+      }
+      return;
+    }
+
     const path = (window.location.pathname || "").toLowerCase();
     if (!path.startsWith("/direct")) {
-      // Logged in on feed/home after auth — go straight to DM inbox once
-      if (!redirectedToInbox) {
+      if (forceReport || lastReportedState !== "starting") {
+        lastReportedState = "starting";
+        invokeReport("starting", []);
+      }
+      // Only navigate from feed/home to DM inbox once the signed-in nav shell is present
+      if (!redirectedToInbox && document.querySelector('a[href*="/direct/"]')) {
         redirectedToInbox = true;
-        window.location.replace("https://www.instagram.com/direct/inbox/");
+        setTimeout(() => {
+          if (!isLoginOrChallenge() && !isAuthTransitionPage()) {
+            window.location.href = "https://www.instagram.com/direct/inbox/";
+          }
+        }, 600);
       }
-      if (lastReportedState !== "watching") {
-        lastReportedState = "watching";
-        invokeReport("watching", []);
-      }
+      return;
+    }
+
+    if (!hasLoggedInInboxDom()) {
       return;
     }
 
@@ -344,15 +381,19 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       });
     }
 
-    if (lastReportedState !== "watching" || events.length > 0) {
+    if (forceReport || lastReportedState !== "watching" || events.length > 0) {
       lastReportedState = "watching";
       invokeReport("watching", events);
     }
   }
 
+  window.__mastIgScanNow = (forceReport) => {
+    scanVisibleThreads(Boolean(forceReport));
+  };
+
   function scheduleScan() {
     if (scanTimer) clearTimeout(scanTimer);
-    scanTimer = setTimeout(scanVisibleThreads, 1200);
+    scanTimer = setTimeout(() => scanVisibleThreads(false), 1200);
   }
 
   function startObserver() {
@@ -360,8 +401,8 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       const observer = new MutationObserver(scheduleScan);
       observer.observe(document.body, { childList: true, subtree: true });
     }
-    setTimeout(scanVisibleThreads, 1800);
-    setInterval(scanVisibleThreads, 12000);
+    setTimeout(() => scanVisibleThreads(false), 2200);
+    setInterval(() => scanVisibleThreads(false), 12000);
   }
 
   if (document.readyState === "loading") {

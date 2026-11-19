@@ -54,7 +54,7 @@ export function useDesktopIgWatcherBackground(enabled: boolean) {
         toast.success("Instagram connected! Watching replies in the background.");
       }
 
-      if (payload.status.state === "needs_login" && !promptedLoginRef.current) {
+      if (payload.status.state === "needs_login" && !payload.status.windowVisible && !promptedLoginRef.current) {
         promptedLoginRef.current = true;
         toast.warning("Instagram sign-in needed to watch DM replies.", {
           action: {

@@ -456,15 +456,17 @@ export function ReplyObservationCard({
 
                 {igWatcher.status?.enabled && (
                   <>
-                    <button
-                      type="button"
-                      onClick={igWatcher.checkNow}
-                      disabled={igWatcher.busy}
-                      className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <RefreshCw className="size-3.5" />
-                      Check Now
-                    </button>
+                    {igWatcher.status.connected && (
+                      <button
+                        type="button"
+                        onClick={igWatcher.checkNow}
+                        disabled={igWatcher.busy}
+                        className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RefreshCw className="size-3.5" />
+                        Check Now
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={igWatcher.disconnect}

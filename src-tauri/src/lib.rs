@@ -897,9 +897,9 @@ fn get_ig_watcher_status(app: AppHandle, ig_state: State<IgWatcherState>) -> IgW
 }
 
 #[tauri::command]
-fn open_ig_watcher(
+async fn open_ig_watcher(
     app: AppHandle,
-    ig_state: State<IgWatcherState>,
+    ig_state: State<'_, IgWatcherState>,
     auto_hide_after_login: Option<bool>,
 ) -> Result<IgWatcherStatus, String> {
     let should_auto_hide = auto_hide_after_login.unwrap_or_else(|| {
@@ -913,9 +913,9 @@ fn open_ig_watcher(
 }
 
 #[tauri::command]
-fn ensure_ig_watcher_background(
+async fn ensure_ig_watcher_background(
     app: AppHandle,
-    ig_state: State<IgWatcherState>,
+    ig_state: State<'_, IgWatcherState>,
 ) -> Result<IgWatcherStatus, String> {
     let enabled = ig_state.inner.lock().map(|g| g.enabled).unwrap_or(false);
     if !enabled {
@@ -925,7 +925,10 @@ fn ensure_ig_watcher_background(
 }
 
 #[tauri::command]
-fn refresh_ig_watcher(app: AppHandle, ig_state: State<IgWatcherState>) -> Result<IgWatcherStatus, String> {
+async fn refresh_ig_watcher(
+    app: AppHandle,
+    ig_state: State<'_, IgWatcherState>,
+) -> Result<IgWatcherStatus, String> {
     if let Some(win) = app.get_webview_window(IG_WATCHER_LABEL) {
         let _ = win.eval(
             "if (location.hostname.endsWith('instagram.com') && !location.pathname.startsWith('/accounts') && !location.pathname.startsWith('/challenge')) { location.href = 'https://www.instagram.com/direct/inbox/'; }",
@@ -937,7 +940,10 @@ fn refresh_ig_watcher(app: AppHandle, ig_state: State<IgWatcherState>) -> Result
 }
 
 #[tauri::command]
-fn disconnect_ig_watcher(app: AppHandle, ig_state: State<IgWatcherState>) -> Result<IgWatcherStatus, String> {
+async fn disconnect_ig_watcher(
+    app: AppHandle,
+    ig_state: State<'_, IgWatcherState>,
+) -> Result<IgWatcherStatus, String> {
     {
         let mut guard = ig_state.inner.lock().unwrap();
         guard.enabled = false;
@@ -954,7 +960,11 @@ fn disconnect_ig_watcher(app: AppHandle, ig_state: State<IgWatcherState>) -> Res
     }
 
     let data_dir = webview_data_dir(&ig_state.data_dir);
-    let _ = std::fs::remove_dir_all(data_dir);
+    thread::spawn(move || {
+        // Give WebView2 subprocess a brief moment to release locks before wiping cookies
+        thread::sleep(std::time::Duration::from_millis(350));
+        let _ = std::fs::remove_dir_all(data_dir);
+    });
 
     Ok(ig_state.snapshot(&app))
 }

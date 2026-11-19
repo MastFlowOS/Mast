@@ -40,6 +40,7 @@ export function useDesktopIgWatcherBackground(enabled: boolean) {
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let startupTimer: number | null = null;
 
     const handleUpdate = async (payload: DesktopIgWatcherUpdateEvent) => {
       if (disposed || !payload?.status) return;
@@ -104,9 +105,14 @@ export function useDesktopIgWatcherBackground(enabled: boolean) {
       if (!disposed && initial) {
         prevConnectedRef.current = initial.connected;
         broadcastStatus(initial);
-        if (initial.enabled) {
-          const started = await ensureDesktopIgWatcherBackground();
-          if (!disposed && started) broadcastStatus(started);
+        // Only auto-resume hidden background watching if the user actually completed IG sign-in once
+        if (initial.enabled && initial.connected) {
+          startupTimer = window.setTimeout(() => {
+            if (disposed) return;
+            void ensureDesktopIgWatcherBackground().then((started) => {
+              if (!disposed && started) broadcastStatus(started);
+            });
+          }, 1500);
         }
       }
     })();
@@ -121,6 +127,7 @@ export function useDesktopIgWatcherBackground(enabled: boolean) {
 
     return () => {
       disposed = true;
+      if (startupTimer !== null) window.clearTimeout(startupTimer);
       window.clearInterval(refreshInterval);
       if (unlisten) unlisten();
     };

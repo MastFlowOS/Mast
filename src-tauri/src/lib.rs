@@ -917,8 +917,12 @@ async fn ensure_ig_watcher_background(
     app: AppHandle,
     ig_state: State<'_, IgWatcherState>,
 ) -> Result<IgWatcherStatus, String> {
-    let enabled = ig_state.inner.lock().map(|g| g.enabled).unwrap_or(false);
-    if !enabled {
+    let should_resume = ig_state
+        .inner
+        .lock()
+        .map(|g| g.enabled && g.connected)
+        .unwrap_or(false);
+    if !should_resume {
         return Ok(ig_state.snapshot(&app));
     }
     create_or_show_watcher(&app, &ig_state, false, false)

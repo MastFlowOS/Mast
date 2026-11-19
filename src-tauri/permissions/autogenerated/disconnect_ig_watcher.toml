@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disconnect-ig-watcher"
+description = "Enables the disconnect_ig_watcher command without any pre-configured scope."
+commands.allow = ["disconnect_ig_watcher"]
+
+[[permission]]
+identifier = "deny-disconnect-ig-watcher"
+description = "Denies the disconnect_ig_watcher command without any pre-configured scope."
+commands.deny = ["disconnect_ig_watcher"]

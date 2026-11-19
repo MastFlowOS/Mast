@@ -42,7 +42,8 @@ export interface EmailReplyInput {
 }
 
 export interface InstagramSyncEventInput {
-  handle: string;
+  handle?: string | null;
+  displayName?: string | null;
   previewText?: string | null;
   threadUrl?: string | null;
   observedAt?: string | null;
@@ -162,8 +163,9 @@ async function matchLeadByEmail(
 async function matchLeadByInstagramHandle(
   db: ReplyDbClient,
   userId: string,
-  canonicalHandle: string,
+  canonicalHandle: string | null,
   requireContacted: boolean,
+  displayName?: string | null,
 ): Promise<MatchedLeadRow | null> {
   // Fetch user's leads that have a non-null instagram_handle and filter via canonical normalizer
   // because stored handles can be "@foo", "foo", or "https://instagram.com/foo".
@@ -174,15 +176,30 @@ async function matchLeadByInstagramHandle(
     .not("instagram_handle", "is", null)
     .limit(500);
 
-  const matching = (leads || []).filter((lead: MatchedLeadRow) => {
-    const norm = extractInstagramHandle(lead.instagram_handle);
-    if (norm !== canonicalHandle) return false;
+  const candidates = (leads || []).filter((lead: MatchedLeadRow) => {
     if (!requireContacted) return true;
     const st = String(lead.status || "").toLowerCase();
     return Boolean(lead.last_contacted_at) || CONTACTED_STATUSES.has(st);
   });
 
-  return chooseBestLead(matching);
+  if (canonicalHandle) {
+    const byHandle = candidates.filter(
+      (lead: MatchedLeadRow) => extractInstagramHandle(lead.instagram_handle) === canonicalHandle,
+    );
+    if (byHandle.length > 0) return chooseBestLead(byHandle);
+  }
+
+  const normalizedName = (displayName || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (normalizedName) {
+    const byName = candidates.filter(
+      (lead: MatchedLeadRow) =>
+        (lead.business_name || "").trim().toLowerCase().replace(/\s+/g, " ") === normalizedName,
+    );
+    // Only auto-match by display name when unambiguous among contacted leads
+    if (byName.length === 1) return byName[0];
+  }
+
+  return null;
 }
 
 export async function recordVerifiedClientReply(params: {
@@ -519,20 +536,23 @@ export async function ingestInstagramSyncEvents(
   for (const ev of events) {
     processed++;
     const canonicalHandle = extractInstagramHandle(ev.handle);
-    if (!canonicalHandle) {
+    const displayName = (ev.displayName || "").trim();
+    if (!canonicalHandle && !displayName) {
       unmatched++;
       continue;
     }
 
     // Require that the lead was actually contacted so personal/unrelated IG DMs
     // from friends never leak into Mast notifications.
-    const lead = await matchLeadByInstagramHandle(db, userId, canonicalHandle, true);
+    const lead = await matchLeadByInstagramHandle(db, userId, canonicalHandle, true, displayName);
     if (!lead) {
       unmatched++;
       continue;
     }
 
-    const preview = (ev.previewText || "").trim() || `@${canonicalHandle} replied in Instagram DMs`;
+    const resolvedHandle = canonicalHandle || extractInstagramHandle(lead.instagram_handle) || lead.business_name;
+    const senderLabel = resolvedHandle.startsWith("@") ? resolvedHandle : `@${resolvedHandle}`;
+    const preview = (ev.previewText || "").trim() || `${senderLabel} replied in Instagram DMs`;
     const triage = await triageFn({
       channel: "instagram",
       businessName: lead.business_name,
@@ -551,7 +571,7 @@ export async function ingestInstagramSyncEvents(
       userId,
       lead,
       channel: "instagram",
-      senderLabel: `@${canonicalHandle}`,
+      senderLabel,
       subject: null,
       bodyText: preview,
       summary: triage.summary,

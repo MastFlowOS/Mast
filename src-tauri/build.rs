@@ -11,6 +11,12 @@ fn main() {
             "set_desktop_auth_item",
             "remove_desktop_auth_item",
             "return_to_desktop_app",
+            "get_ig_watcher_status",
+            "open_ig_watcher",
+            "ensure_ig_watcher_background",
+            "refresh_ig_watcher",
+            "disconnect_ig_watcher",
+            "report_ig_watcher_state",
         ]),
     );
 

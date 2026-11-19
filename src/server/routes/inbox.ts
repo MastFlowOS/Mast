@@ -90,13 +90,18 @@ const TestImapSchema = z.object({
 const IgSyncSchema = z.object({
   events: z
     .array(
-      z.object({
-        handle: z.string().trim().min(1).max(120),
-        previewText: z.string().max(1000).optional().nullable(),
-        threadUrl: z.string().max(500).optional().nullable(),
-        observedAt: z.string().max(80).optional().nullable(),
-        unread: z.boolean().optional(),
-      }),
+      z
+        .object({
+          handle: z.string().trim().max(120).optional().nullable(),
+          displayName: z.string().trim().max(200).optional().nullable(),
+          previewText: z.string().max(1000).optional().nullable(),
+          threadUrl: z.string().max(500).optional().nullable(),
+          observedAt: z.string().max(80).optional().nullable(),
+          unread: z.boolean().optional(),
+        })
+        .refine((ev) => Boolean(ev.handle?.trim() || ev.displayName?.trim()), {
+          message: "Either handle or displayName is required",
+        }),
     )
     .min(1)
     .max(50),

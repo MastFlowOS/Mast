@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ig-watcher",
+  "description": "Strictly scoped capability for the background Instagram reply watcher webview",
+  "windows": [
+    "ig-watcher"
+  ],
+  "webviews": [
+    "ig-watcher"
+  ],
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://www.instagram.com/*",
+      "https://instagram.com/*"
+    ]
+  },
+  "permissions": [
+    "allow-ig-watcher-report"
+  ]
+}

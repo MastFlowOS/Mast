@@ -28,6 +28,7 @@ import {
 } from "@/lib/dynamic-island";
 import { useNavIndicator } from "@/hooks/use-nav-indicator";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useDesktopIgWatcherBackground } from "@/lib/desktop/useDesktopIgWatcher";
 import { DevPlanSwitcher } from "@/components/mast/DevPlanSwitcher";
 import {
   Crosshair, Search, Kanban, Bell, Settings, LogOut,
@@ -68,6 +69,8 @@ function DashboardLayout() {
   const { data: account } = useAccount(!!user);
   const { data: followupsData = [] } = useFollowups({ limit: 500 }, !!user);
   const logout  = useLogout();
+
+  useDesktopIgWatcherBackground(Boolean(user?.id));
 
   // ── Sidebar rail (desktop/tablet only — mobile keeps the original
   // always-expanded layout, since touch devices have no hover state) ────────

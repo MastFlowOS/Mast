@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ensure-ig-watcher-background"
+description = "Enables the ensure_ig_watcher_background command without any pre-configured scope."
+commands.allow = ["ensure_ig_watcher_background"]
+
+[[permission]]
+identifier = "deny-ensure-ig-watcher-background"
+description = "Denies the ensure_ig_watcher_background command without any pre-configured scope."
+commands.deny = ["ensure_ig_watcher_background"]

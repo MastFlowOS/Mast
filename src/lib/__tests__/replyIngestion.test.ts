@@ -244,4 +244,43 @@ describe("replyIngestion", () => {
     assert.equal(state.leads[0].status, "replied");
     assert.equal(state.leads[1].status, "new");
   });
+
+  it("matches contacted IG leads unambiguously by displayName when Instagram omits @handle", async () => {
+    const { db, state } = createMockDb({
+      leads: [
+        {
+          id: 40,
+          user_id: "user-1",
+          business_name: "Northframe Coffee",
+          instagram_handle: "@northframe.coffee",
+          status: "instagram_sent",
+          last_contacted_at: "2026-11-18T10:00:00Z",
+        },
+        {
+          id: 41,
+          user_id: "user-1",
+          business_name: "Personal Friend",
+          instagram_handle: "@personalfriend",
+          status: "new",
+          last_contacted_at: null,
+        },
+      ],
+    });
+
+    const summary = await ingestInstagramSyncEvents(
+      db,
+      "user-1",
+      [
+        { displayName: "Northframe Coffee", previewText: "What are your rates?", unread: true },
+        { displayName: "Personal Friend", previewText: "Yo!", unread: true },
+      ],
+      fakeHumanTriage,
+    );
+
+    assert.equal(summary.processed, 2);
+    assert.equal(summary.recorded, 1);
+    assert.equal(summary.unmatched, 1);
+    assert.equal(state.user_notifications[0].lead_id, 40);
+    assert.equal(state.leads[0].status, "replied");
+  });
 });

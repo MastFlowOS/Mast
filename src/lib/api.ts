@@ -3146,6 +3146,27 @@ export async function syncInboxNow(): Promise<InboxSyncResult> {
   });
 }
 
+export type InstagramWatcherEvent = {
+  handle?: string | null;
+  displayName?: string | null;
+  previewText?: string | null;
+  threadUrl?: string | null;
+  observedAt?: string | null;
+  unread?: boolean;
+};
+
+export async function syncInstagramWatcherEvents(
+  events: InstagramWatcherEvent[],
+): Promise<{ processed: number; recorded: number; duplicates: number; unmatched: number }> {
+  return backendFetch<{ processed: number; recorded: number; duplicates: number; unmatched: number }>(
+    "/v1/inbox/ig-sync",
+    {
+      method: "POST",
+      body: JSON.stringify({ events }),
+    },
+  );
+}
+
 export async function deleteInboxSettings(): Promise<{ success: boolean }> {
   return backendFetch<{ success: boolean }>("/v1/inbox/settings", {
     method: "DELETE",

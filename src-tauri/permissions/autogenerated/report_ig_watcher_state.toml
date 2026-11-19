@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-ig-watcher-state"
+description = "Enables the report_ig_watcher_state command without any pre-configured scope."
+commands.allow = ["report_ig_watcher_state"]
+
+[[permission]]
+identifier = "deny-report-ig-watcher-state"
+description = "Denies the report_ig_watcher_state command without any pre-configured scope."
+commands.deny = ["report_ig_watcher_state"]

@@ -228,3 +228,67 @@ export async function openDesktopChromePopup(url: string): Promise<boolean> {
     return false;
   }
 }
+
+export interface DesktopIgWatcherStatus {
+  enabled: boolean;
+  connected: boolean;
+  windowOpen: boolean;
+  windowVisible: boolean;
+  state: "disabled" | "starting" | "watching" | "needs_login";
+  lastCheckedMs: number | null;
+  lastError: string | null;
+}
+
+export interface DesktopIgObservedThread {
+  handle?: string | null;
+  displayName?: string | null;
+  previewText?: string | null;
+  threadUrl?: string | null;
+  unread?: boolean | null;
+}
+
+export interface DesktopIgWatcherUpdateEvent {
+  status: DesktopIgWatcherStatus;
+  events: DesktopIgObservedThread[];
+}
+
+export async function getDesktopIgWatcherStatus(): Promise<DesktopIgWatcherStatus | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    return await invoke<DesktopIgWatcherStatus>("get_ig_watcher_status");
+  } catch {
+    return null;
+  }
+}
+
+export async function openDesktopIgWatcher(
+  autoHideAfterLogin?: boolean,
+): Promise<DesktopIgWatcherStatus | null> {
+  if (!isDesktopApp()) return null;
+  return await invoke<DesktopIgWatcherStatus>("open_ig_watcher", {
+    autoHideAfterLogin: autoHideAfterLogin ?? null,
+  });
+}
+
+export async function ensureDesktopIgWatcherBackground(): Promise<DesktopIgWatcherStatus | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    return await invoke<DesktopIgWatcherStatus>("ensure_ig_watcher_background");
+  } catch {
+    return null;
+  }
+}
+
+export async function refreshDesktopIgWatcher(): Promise<DesktopIgWatcherStatus | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    return await invoke<DesktopIgWatcherStatus>("refresh_ig_watcher");
+  } catch {
+    return null;
+  }
+}
+
+export async function disconnectDesktopIgWatcher(): Promise<DesktopIgWatcherStatus | null> {
+  if (!isDesktopApp()) return null;
+  return await invoke<DesktopIgWatcherStatus>("disconnect_ig_watcher");
+}

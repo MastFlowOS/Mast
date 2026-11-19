@@ -8,6 +8,7 @@ import {
   Inbox,
   Instagram,
   Loader2,
+  Monitor,
   RefreshCw,
   Wand2,
 } from "lucide-react";
@@ -19,8 +20,8 @@ import {
   useTestInboxConnection,
 } from "@/hooks/use-mast-api";
 import { getBackendBaseUrl } from "@/lib/api";
+import { useDesktopIgWatcherControl } from "@/lib/desktop/useDesktopIgWatcher";
 import { deriveImapDefaultsFromSmtp } from "@/lib/inboxDefaults";
-import { supabase } from "@/lib/supabase";
 
 interface ReplyObservationCardProps {
   smtpHost: string;
@@ -49,10 +50,10 @@ export function ReplyObservationCard({
   const [imapPassword, setImapPassword] = useState("");
   const [useSmtpPassword, setUseSmtpPassword] = useState(false);
   const [imapTls, setImapTls] = useState(true);
-  const [igEmailAlerts, setIgEmailAlerts] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const igWatcher = useDesktopIgWatcherControl();
 
   useEffect(() => {
     if (!server || initialized) return;
@@ -60,7 +61,6 @@ export function ReplyObservationCard({
     setImapPort(server.imapPort || "993");
     setImapUsername(server.imapUsername || "");
     setImapTls(server.imapTls);
-    setIgEmailAlerts(server.igEmailAlertsEnabled);
     setInitialized(true);
   }, [server, initialized]);
 
@@ -120,7 +120,7 @@ export function ReplyObservationCard({
         imapPassword: imapPassword || undefined,
         useSmtpPassword: useSmtpPassword && !imapPassword ? true : undefined,
         imapTls,
-        igEmailAlertsEnabled: igEmailAlerts,
+        igEmailAlertsEnabled: false,
         enabled: true,
       });
       setImapPassword("");
@@ -169,18 +169,6 @@ export function ReplyObservationCard({
     }
   };
 
-  const handleCopyExtensionSession = async () => {
-    if (!supabase) return;
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) {
-      toast.error("Not signed in");
-      return;
-    }
-    const baseUrl = getBackendBaseUrl() || "";
-    const payload = JSON.stringify({ apiBaseUrl: baseUrl, token: session.access_token }, null, 2);
-    await copyText("ext", payload, "Extension config");
-  };
-
   const backendBase = getBackendBaseUrl();
   const fullWebhookUrl =
     backendBase && server?.inboundWebhookPath
@@ -199,7 +187,7 @@ export function ReplyObservationCard({
               Client Reply Observation (Email &amp; Instagram)
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Watch your inbox for lead replies in the background and detect personal Instagram DM notifications automatically.
+              Watch your inbox for email replies 24/7 and connect Instagram once in the MAST Desktop app for live DM notifications.
             </p>
           </div>
         </div>
@@ -360,76 +348,146 @@ export function ReplyObservationCard({
               </>
             )}
           </div>
-        </div>
-
-        {/* Right: Personal IG Observation (Zero Business Account Needed) */}
-        <div className="space-y-3.5 border-t lg:border-t-0 lg:border-l border-border/60 pt-4 lg:pt-0 lg:pl-6">
-          <div className="flex items-center gap-2">
-            <Instagram className="size-4 text-pink-400" />
-            <h3 className="text-sm font-semibold text-foreground">
-              Instagram Reply Detection (Personal Accounts)
-            </h3>
-          </div>
-
-          <label className="flex items-start gap-2.5 rounded-xl border border-border/70 bg-background/60 p-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={igEmailAlerts}
-              onChange={(e) => setIgEmailAlerts(e.target.checked)}
-              className="mt-0.5 rounded border-border"
-            />
-            <span className="text-xs leading-relaxed">
-              <strong className="block text-foreground">Detect Instagram DM email alerts (Zero IG risk)</strong>
-              <span className="text-muted-foreground">
-                Works on any brand-new personal IG account. Keep email notifications enabled in Instagram → Notifications → Email → Direct Messages.
-              </span>
-            </span>
-          </label>
 
           {fullWebhookUrl && (
-            <div>
-              <label className="block text-xs font-semibold text-muted-foreground mb-1">
-                Inbound Forwarding / Webhook URL
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  readOnly
-                  value={fullWebhookUrl}
-                  className="flex-1 bg-background border border-border/80 px-3 py-1.5 rounded-xl text-xs font-mono text-muted-foreground select-all"
+            <details className="pt-1">
+              <summary className="text-[11px] font-medium text-muted-foreground hover:text-foreground cursor-pointer select-none">
+                Optional: Inbound Forwarding / Webhook URL
+              </summary>
+              <div className="mt-2 space-y-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    readOnly
+                    value={fullWebhookUrl}
+                    className="flex-1 bg-background border border-border/80 px-3 py-1.5 rounded-xl text-xs font-mono text-muted-foreground select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => copyText("webhook", fullWebhookUrl, "Webhook URL")}
+                    className="p-2 rounded-xl border border-border/80 bg-background hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+                    title="Copy Webhook URL"
+                  >
+                    {copiedKey === "webhook" ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Use with Resend, Postmark, or Cloudflare Email Worker if you prefer forwarding over IMAP.
+                </p>
+              </div>
+            </details>
+          )}
+        </div>
+
+        {/* Right: Built-in Desktop Instagram Reply Watcher */}
+        <div className="space-y-3.5 border-t lg:border-t-0 lg:border-l border-border/60 pt-4 lg:pt-0 lg:pl-6">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Instagram className="size-4 text-pink-400" />
+              <h3 className="text-sm font-semibold text-foreground">
+                Instagram Reply Watcher
+              </h3>
+            </div>
+
+            {igWatcher.desktop && (
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
+                  igWatcher.status?.state === "watching"
+                    ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
+                    : igWatcher.status?.state === "needs_login"
+                      ? "bg-amber-500/10 border-amber-500/25 text-amber-300"
+                      : igWatcher.status?.enabled
+                        ? "bg-blue-500/10 border-blue-500/25 text-blue-300"
+                        : "bg-muted/60 border-border text-muted-foreground"
+                }`}
+              >
+                <span
+                  className={`size-1.5 rounded-full ${
+                    igWatcher.status?.state === "watching"
+                      ? "bg-emerald-400"
+                      : igWatcher.status?.state === "needs_login"
+                        ? "bg-amber-400"
+                        : igWatcher.status?.enabled
+                          ? "bg-blue-400"
+                          : "bg-muted-foreground"
+                  }`}
                 />
+                {igWatcher.status?.state === "watching"
+                  ? "Connected & Watching"
+                  : igWatcher.status?.state === "needs_login"
+                    ? "Sign-in Required"
+                    : igWatcher.status?.enabled
+                      ? "Connecting..."
+                      : "Not Connected"}
+              </span>
+            )}
+          </div>
+
+          {igWatcher.desktop ? (
+            <div className="rounded-xl border border-border/70 bg-background/60 p-4 space-y-3">
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Sign in to Instagram <strong className="text-foreground">once</strong> inside the MAST Desktop app. No Chrome extension or copy-paste needed—your session stays saved locally and quietly notifies <strong className="text-foreground">both the app and website</strong> whenever a contacted lead replies in DMs.
+              </p>
+
+              {igWatcher.status?.lastCheckedMs && (
+                <p className="text-[11px] text-muted-foreground">
+                  Last checked: {new Date(igWatcher.status.lastCheckedMs).toLocaleTimeString()}
+                </p>
+              )}
+
+              {igWatcher.status?.lastError && (
+                <p className="text-xs text-rose-400">{igWatcher.status.lastError}</p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
                 <button
                   type="button"
-                  onClick={() => copyText("webhook", fullWebhookUrl, "Webhook URL")}
-                  className="p-2 rounded-xl border border-border/80 bg-background hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                  title="Copy Webhook URL"
+                  onClick={igWatcher.connect}
+                  disabled={igWatcher.busy}
+                  className="px-3.5 py-1.5 rounded-xl bg-brand hover:bg-brand/90 text-brand-foreground text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
                 >
-                  {copiedKey === "webhook" ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+                  {igWatcher.busy && <Loader2 className="size-3.5 animate-spin" />}
+                  <Instagram className="size-3.5" />
+                  {igWatcher.status?.state === "needs_login"
+                    ? "Reconnect Instagram"
+                    : igWatcher.status?.connected
+                      ? "Open Instagram Window"
+                      : "Connect Instagram"}
                 </button>
+
+                {igWatcher.status?.enabled && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={igWatcher.checkNow}
+                      disabled={igWatcher.busy}
+                      className="px-3 py-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="size-3.5" />
+                      Check Now
+                    </button>
+                    <button
+                      type="button"
+                      onClick={igWatcher.disconnect}
+                      disabled={igWatcher.busy}
+                      className="px-2.5 py-1.5 rounded-xl text-xs text-muted-foreground hover:text-rose-400 cursor-pointer"
+                    >
+                      Disconnect
+                    </button>
+                  </>
+                )}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Optional: use this with Resend/Postmark/Cloudflare Email Worker if you prefer forwarding over IMAP.
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border/70 bg-background/60 p-4 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+                <Monitor className="size-4 text-brand" />
+                Connect once inside the MAST Desktop app
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Built-in Instagram reply watching runs natively in the <strong className="text-foreground">MAST Desktop app</strong>—no browser extension, no Developer Mode, and no config copy-paste. Open MAST Desktop → Settings and click <strong className="text-foreground">Connect Instagram</strong> once; whenever the desktop app is open on your PC, replies appear live on both the app and here on the website.
               </p>
             </div>
           )}
-
-          <div className="rounded-xl border border-border/60 bg-background/40 p-3 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-foreground">
-                Live Browser IG Bridge (Chrome Extension)
-              </span>
-              <button
-                type="button"
-                onClick={handleCopyExtensionSession}
-                className="inline-flex items-center gap-1 rounded-lg border border-border/80 bg-background px-2.5 py-1 text-[11px] font-medium hover:bg-muted cursor-pointer"
-              >
-                {copiedKey === "ext" ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
-                Copy Extension Config
-              </button>
-            </div>
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Load <code className="text-foreground">extensions/mast-ig-bridge</code> in Chrome to passively sync unread replies from contacted leads whenever you have Instagram DMs open—no IG password ever leaves your browser.
-            </p>
-          </div>
         </div>
       </div>
     </div>

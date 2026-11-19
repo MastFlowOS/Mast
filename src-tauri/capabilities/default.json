@@ -3,10 +3,10 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
-    "*"
+    "main"
   ],
   "webviews": [
-    "*"
+    "main"
   ],
   "local": true,
   "remote": {

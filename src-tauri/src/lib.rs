@@ -7,6 +7,12 @@ use std::thread;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+mod ig_watcher;
+use ig_watcher::{
+    create_or_show_watcher, handle_ig_watcher_report, webview_data_dir, IgWatcherReportPayload,
+    IgWatcherState, IgWatcherStatus, IG_WATCHER_LABEL,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerStatus {
     pub is_running: bool,
@@ -885,6 +891,87 @@ fn open_external_popup(url: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn get_ig_watcher_status(app: AppHandle, ig_state: State<IgWatcherState>) -> IgWatcherStatus {
+    ig_state.snapshot(&app)
+}
+
+#[tauri::command]
+fn open_ig_watcher(
+    app: AppHandle,
+    ig_state: State<IgWatcherState>,
+    auto_hide_after_login: Option<bool>,
+) -> Result<IgWatcherStatus, String> {
+    let should_auto_hide = auto_hide_after_login.unwrap_or_else(|| {
+        ig_state
+            .inner
+            .lock()
+            .map(|g| !g.connected)
+            .unwrap_or(true)
+    });
+    create_or_show_watcher(&app, &ig_state, true, should_auto_hide)
+}
+
+#[tauri::command]
+fn ensure_ig_watcher_background(
+    app: AppHandle,
+    ig_state: State<IgWatcherState>,
+) -> Result<IgWatcherStatus, String> {
+    let enabled = ig_state.inner.lock().map(|g| g.enabled).unwrap_or(false);
+    if !enabled {
+        return Ok(ig_state.snapshot(&app));
+    }
+    create_or_show_watcher(&app, &ig_state, false, false)
+}
+
+#[tauri::command]
+fn refresh_ig_watcher(app: AppHandle, ig_state: State<IgWatcherState>) -> Result<IgWatcherStatus, String> {
+    if let Some(win) = app.get_webview_window(IG_WATCHER_LABEL) {
+        let _ = win.eval(
+            "if (location.hostname.endsWith('instagram.com') && !location.pathname.startsWith('/accounts') && !location.pathname.startsWith('/challenge')) { location.href = 'https://www.instagram.com/direct/inbox/'; }",
+        );
+    } else if ig_state.inner.lock().map(|g| g.enabled).unwrap_or(false) {
+        let _ = create_or_show_watcher(&app, &ig_state, false, false);
+    }
+    Ok(ig_state.snapshot(&app))
+}
+
+#[tauri::command]
+fn disconnect_ig_watcher(app: AppHandle, ig_state: State<IgWatcherState>) -> Result<IgWatcherStatus, String> {
+    {
+        let mut guard = ig_state.inner.lock().unwrap();
+        guard.enabled = false;
+        guard.connected = false;
+        guard.state = "disabled".to_string();
+        guard.auto_hide_on_login = false;
+        guard.last_error = None;
+        guard.force_close = true;
+        ig_state.persist_config(false, false);
+    }
+
+    if let Some(win) = app.get_webview_window(IG_WATCHER_LABEL) {
+        let _ = win.destroy();
+    }
+
+    let data_dir = webview_data_dir(&ig_state.data_dir);
+    let _ = std::fs::remove_dir_all(data_dir);
+
+    Ok(ig_state.snapshot(&app))
+}
+
+#[tauri::command]
+fn report_ig_watcher_state(
+    webview: tauri::Webview,
+    app: AppHandle,
+    ig_state: State<IgWatcherState>,
+    payload: IgWatcherReportPayload,
+) -> Result<IgWatcherStatus, String> {
+    if webview.label() != IG_WATCHER_LABEL {
+        return Err("Unauthorized webview for IG watcher report".to_string());
+    }
+    Ok(handle_ig_watcher_report(&app, &ig_state, payload))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState {
@@ -895,9 +982,11 @@ pub fn run() {
         desktop_origin: Arc::new(Mutex::new(None)),
         auth_storage_lock: Arc::new(Mutex::new(())),
     };
+    let ig_watcher_state = IgWatcherState::load(get_mast_data_dir());
 
     tauri::Builder::default()
         .manage(app_state)
+        .manage(ig_watcher_state)
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -912,7 +1001,13 @@ pub fn run() {
             set_desktop_auth_item,
             remove_desktop_auth_item,
             return_to_desktop_app,
-            open_external_popup
+            open_external_popup,
+            get_ig_watcher_status,
+            open_ig_watcher,
+            ensure_ig_watcher_background,
+            refresh_ig_watcher,
+            disconnect_ig_watcher,
+            report_ig_watcher_state
         ])
         .on_page_load(|webview, payload| {
             let url = payload.url();
@@ -939,12 +1034,33 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
-            match event {
-                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
-                    let state = window.state::<AppState>();
-                    cleanup_worker_state(&state);
+            if window.label() == IG_WATCHER_LABEL {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    let ig_state = window.state::<IgWatcherState>();
+                    let force = ig_state.inner.lock().map(|g| g.force_close).unwrap_or(false);
+                    if !force {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
                 }
-                _ => {}
+                return;
+            }
+
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                        let state = window.state::<AppState>();
+                        cleanup_worker_state(&state);
+                        let ig_state = window.state::<IgWatcherState>();
+                        if let Ok(mut guard) = ig_state.inner.lock() {
+                            guard.force_close = true;
+                        }
+                        if let Some(ig_win) = window.app_handle().get_webview_window(IG_WATCHER_LABEL) {
+                            let _ = ig_win.destroy();
+                        }
+                    }
+                    _ => {}
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -1010,6 +1126,11 @@ mod tests {
             "remove_desktop_auth_item",
             "return_to_desktop_app",
             "open_external_popup",
+            "get_ig_watcher_status",
+            "open_ig_watcher",
+            "ensure_ig_watcher_background",
+            "refresh_ig_watcher",
+            "disconnect_ig_watcher",
         ];
 
         for cmd in required_commands {
@@ -1061,6 +1182,27 @@ mod tests {
                 unauthorized_origin
             );
         }
+
+        let ig_origin = tauri::ipc::Origin::Remote {
+            url: "https://www.instagram.com/direct/inbox/".parse().unwrap(),
+        };
+        assert!(
+            authority
+                .resolve_access("report_ig_watcher_state", IG_WATCHER_LABEL, IG_WATCHER_LABEL, &ig_origin)
+                .is_some(),
+            "ig-watcher must be able to invoke report_ig_watcher_state"
+        );
+        assert!(
+            authority
+                .resolve_access("start_worker", IG_WATCHER_LABEL, IG_WATCHER_LABEL, &ig_origin)
+                .is_none(),
+            "ig-watcher must NOT have access to main-app commands"
+        );
+        assert!(
+            authority
+                .resolve_access("report_ig_watcher_state", "main", "main", &unauthorized_origin)
+                .is_none()
+        );
     }
 
     #[test]

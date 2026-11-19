@@ -207,6 +207,7 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
   if (host !== "www.instagram.com" && host !== "instagram.com") return;
 
   const sentSignatures = new Set();
+  const networkThreadsByKey = new Map();
   let lastReportedState = "";
   let scanTimer = null;
   let redirectedToInbox = false;
@@ -220,6 +221,120 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       }).catch(() => {});
     } catch (_) {}
   }
+
+  function stripXssi(text) {
+    return typeof text === "string" ? text.replace(/^for\s*\(\s*;\s*;\s*\)\s*;?\s*/, "") : "";
+  }
+
+  function collectThreadsFromPayload(node, viewerPk, out, depth) {
+    if (!node || typeof node !== "object" || depth > 8) return;
+    if (Array.isArray(node)) {
+      for (const item of node) collectThreadsFromPayload(item, viewerPk, out, depth + 1);
+      return;
+    }
+
+    // Standard IG direct_v2 thread shape
+    if (Array.isArray(node.users) && (node.thread_id || node.thread_v2_id || node.thread_key)) {
+      const unreadCount = Number(node.unread_count || 0);
+      const readState = Number(node.read_state || 0);
+      const isUnread = readState === 1 || unreadCount > 0 || node.has_unread === true;
+      const lastItem = node.last_permanent_item || node.last_message || null;
+      const lastSenderPk = lastItem && (lastItem.user_id || lastItem.sender_id);
+      const fromSelf = viewerPk && lastSenderPk && String(lastSenderPk) === String(viewerPk);
+
+      if (isUnread && !fromSelf) {
+        const user = node.users.find((u) => u && (u.username || u.full_name)) || node.users[0];
+        const handle = user && user.username ? String(user.username).trim().toLowerCase() : null;
+        const displayName =
+          (user && user.full_name ? String(user.full_name).trim() : null) ||
+          (node.thread_title ? String(node.thread_title).trim() : null);
+        const tid = node.thread_id || node.thread_v2_id || "";
+        const previewText =
+          (lastItem && (lastItem.text || lastItem.snippet) ? String(lastItem.text || lastItem.snippet).trim() : null) ||
+          "Sent a message on Instagram";
+        if (handle || displayName) {
+          out.push({
+            handle,
+            displayName,
+            previewText: previewText.slice(0, 300),
+            threadUrl: tid ? `https://www.instagram.com/direct/t/${tid}/` : "https://www.instagram.com/direct/inbox/",
+            unread: true,
+          });
+        }
+      }
+    }
+
+    for (const key of ["inbox", "data", "viewer", "threads", "edges", "node", "thread", "ig_direct_inbox", "xfb_fetch_inbox_threads"]) {
+      if (node[key] && typeof node[key] === "object") {
+        collectThreadsFromPayload(node[key], viewerPk, out, depth + 1);
+      }
+    }
+  }
+
+  function handleIgNetworkJson(url, rawText) {
+    try {
+      if (!url || (!url.includes("direct_v2") && !url.includes("graphql"))) return;
+      const cleaned = stripXssi(rawText);
+      if (!cleaned || (cleaned[0] !== "{" && cleaned[0] !== "[")) return;
+      const json = JSON.parse(cleaned);
+      const viewerPk =
+        (json && json.viewer && (json.viewer.pk || json.viewer.id)) ||
+        (json && json.inbox && json.inbox.viewer_id) ||
+        null;
+      const found = [];
+      collectThreadsFromPayload(json, viewerPk, found, 0);
+      if (found.length === 0) return;
+
+      const fresh = [];
+      for (const ev of found) {
+        const sig = `${ev.handle || ev.displayName}:${ev.previewText}`;
+        networkThreadsByKey.set(sig, ev);
+        if (sentSignatures.has(sig)) continue;
+        if (sentSignatures.size > 500) sentSignatures.clear();
+        sentSignatures.add(sig);
+        fresh.push(ev);
+      }
+      if (fresh.length > 0 && !isLoginOrChallenge() && !isAuthTransitionPage()) {
+        lastReportedState = "watching";
+        invokeReport("watching", fresh);
+      }
+    } catch (_) {}
+  }
+
+  // Passive read-only tap on IG's own fetch/XHR inbox responses (zero extra requests)
+  try {
+    const origFetch = window.fetch;
+    if (typeof origFetch === "function") {
+      window.fetch = function (...args) {
+        const reqUrl = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
+        return origFetch.apply(this, args).then((res) => {
+          try {
+            if (reqUrl.includes("direct_v2") || reqUrl.includes("graphql")) {
+              res.clone().text().then((t) => handleIgNetworkJson(reqUrl, t)).catch(() => {});
+            }
+          } catch (_) {}
+          return res;
+        });
+      };
+    }
+
+    const origOpen = XMLHttpRequest.prototype.open;
+    const origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this.__mastUrl = typeof url === "string" ? url : "";
+      return origOpen.call(this, method, url, ...rest);
+    };
+    XMLHttpRequest.prototype.send = function (...args) {
+      this.addEventListener("load", function () {
+        try {
+          if (this.__mastUrl && (this.__mastUrl.includes("direct_v2") || this.__mastUrl.includes("graphql"))) {
+            handleIgNetworkJson(this.__mastUrl, this.responseText);
+          }
+        } catch (_) {}
+      });
+      return origSend.apply(this, args);
+    };
+  } catch (_) {}
 
   function isLoginOrChallenge() {
     const path = (window.location.pathname || "").toLowerCase();
@@ -258,6 +373,31 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     );
   }
 
+  function extractHandleFromReactFiber(el) {
+    try {
+      const fiberKey = Object.keys(el).find(
+        (k) => k.startsWith("__reactFiber$") || k.startsWith("__reactProps$")
+      );
+      if (!fiberKey) return null;
+      let node = el[fiberKey];
+      for (let step = 0; step < 8 && node; step++) {
+        const props = node.memoizedProps || node;
+        const candidates = [props, props && props.thread, props && props.item, props && props.user];
+        for (const c of candidates) {
+          if (!c || typeof c !== "object") continue;
+          if (typeof c.username === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$/.test(c.username)) {
+            return c.username.toLowerCase();
+          }
+          if (Array.isArray(c.users) && c.users[0] && typeof c.users[0].username === "string") {
+            return c.users[0].username.toLowerCase();
+          }
+        }
+        node = node.return;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   function extractHandleFromElement(row) {
     const links = row.querySelectorAll('a[href*="/direct/t/"], a[href^="/"]');
     for (const a of links) {
@@ -269,6 +409,10 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
         }
       }
     }
+
+    const fiberHandle = extractHandleFromReactFiber(row);
+    if (fiberHandle) return fiberHandle;
+
     const text = (row.innerText || "").trim();
     const atMatch = text.match(/@([A-Za-z0-9_][A-Za-z0-9_.]{1,29})/);
     if (atMatch) return atMatch[1].toLowerCase();
@@ -284,15 +428,23 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     const aria = (row.getAttribute("aria-label") || "").toLowerCase();
     if (aria.includes("unread")) return true;
     if (row.querySelector('[aria-label*="Unread" i], [aria-label*="unread" i]')) return true;
-    const spans = row.querySelectorAll("span");
+    const spans = row.querySelectorAll("span, div");
     for (const sp of spans) {
+      if (sp.children && sp.children.length === 0) {
+        try {
+          const cs = window.getComputedStyle(sp);
+          if (cs.backgroundColor === "rgb(0, 149, 246)" && parseFloat(cs.width) <= 14) {
+            return true;
+          }
+        } catch (_) {}
+      }
       if (!sp.textContent || !sp.textContent.trim()) continue;
       if (sp.style && (sp.style.fontWeight === "600" || sp.style.fontWeight === "700")) {
         return true;
       }
       try {
         const fw = Number(window.getComputedStyle(sp).fontWeight);
-        if (fw >= 600 && sp.closest('[role="listitem"], [role="row"], a[href*="/direct/t/"]')) {
+        if (fw >= 600 && sp.closest('[role="listitem"], [role="row"], [role="button"], a[href*="/direct/t/"]')) {
           return true;
         }
       } catch (_) {}

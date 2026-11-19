@@ -177,25 +177,28 @@ async function matchLeadByInstagramHandle(
     .limit(500);
 
   const candidates = (leads || []).filter((lead: MatchedLeadRow) => {
-    if (!requireContacted) return true;
     const st = String(lead.status || "").toLowerCase();
     return Boolean(lead.last_contacted_at) || CONTACTED_STATUSES.has(st);
   });
 
+  // Exact @handle match against any lead in the user's workspace (including new/test
+  // leads, matching how Email reply matching works; personal friends aren't in `leads`).
   if (canonicalHandle) {
-    const byHandle = candidates.filter(
+    const byHandle = (leads || []).filter(
       (lead: MatchedLeadRow) => extractInstagramHandle(lead.instagram_handle) === canonicalHandle,
     );
     if (byHandle.length > 0) return chooseBestLead(byHandle);
   }
 
+  // Fallback by business_name still respects requireContacted so generic names don't collide.
   const normalizedName = (displayName || "").trim().toLowerCase().replace(/\s+/g, " ");
   if (normalizedName) {
-    const byName = candidates.filter(
+    const namePool = requireContacted ? candidates : leads || [];
+    const byName = namePool.filter(
       (lead: MatchedLeadRow) =>
         (lead.business_name || "").trim().toLowerCase().replace(/\s+/g, " ") === normalizedName,
     );
-    // Only auto-match by display name when unambiguous among contacted leads
+    // Only auto-match by display name when unambiguous
     if (byName.length === 1) return byName[0];
   }
 

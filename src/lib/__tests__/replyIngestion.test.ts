@@ -203,7 +203,7 @@ describe("replyIngestion", () => {
     assert.equal(state.leads[0].status, "meeting_booked");
   });
 
-  it("filters local Instagram observer sync strictly to contacted leads so personal DMs never leak", async () => {
+  it("matches IG observer events to workspace leads by @handle while ignoring unknown/uncontacted DMs", async () => {
     const { db, state } = createMockDb({
       leads: [
         {
@@ -217,8 +217,8 @@ describe("replyIngestion", () => {
         {
           id: 31,
           user_id: "user-1",
-          business_name: "Uncontacted Lead",
-          instagram_handle: "@uncontacted_lead",
+          business_name: "New Workspace Lead",
+          instagram_handle: "@new_workspace_lead",
           status: "new",
           last_contacted_at: null,
         },
@@ -230,19 +230,20 @@ describe("replyIngestion", () => {
       "user-1",
       [
         { handle: "@contacted_studio", previewText: "Sure, let's talk!", unread: true },
-        { handle: "@uncontacted_lead", previewText: "Random DM", unread: true },
+        { handle: "@new_workspace_lead", previewText: "Saw your profile!", unread: true },
         { handle: "@best_friend_personal", previewText: "Dinner tonight?", unread: true },
       ],
       fakeHumanTriage,
     );
 
     assert.equal(summary.processed, 3);
-    assert.equal(summary.recorded, 1);
-    assert.equal(summary.unmatched, 2);
-    assert.equal(state.user_notifications.length, 1);
+    assert.equal(summary.recorded, 2);
+    assert.equal(summary.unmatched, 1);
+    assert.equal(state.user_notifications.length, 2);
     assert.equal(state.user_notifications[0].lead_id, 30);
+    assert.equal(state.user_notifications[1].lead_id, 31);
     assert.equal(state.leads[0].status, "replied");
-    assert.equal(state.leads[1].status, "new");
+    assert.equal(state.leads[1].status, "replied");
   });
 
   it("matches contacted IG leads unambiguously by displayName when Instagram omits @handle", async () => {

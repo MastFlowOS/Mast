@@ -946,7 +946,7 @@ async fn refresh_ig_watcher(
             let _ = win.set_focus();
         } else {
             let _ = win.eval(
-                "if (location.pathname.startsWith('/direct') && typeof window.__mastIgScanNow === 'function') { window.__mastIgScanNow(true); } else if (location.hostname.endsWith('instagram.com') && !location.pathname.startsWith('/accounts') && !location.pathname.startsWith('/challenge')) { location.href = 'https://www.instagram.com/direct/inbox/'; }",
+                "if (location.hostname.endsWith('instagram.com') && !location.pathname.startsWith('/accounts') && !location.pathname.startsWith('/challenge')) { if (typeof window.__mastIgScanNow === 'function') { window.__mastIgScanNow(true); } location.href = 'https://www.instagram.com/direct/inbox/'; }",
             );
         }
     } else if ig_state.inner.lock().map(|g| g.enabled).unwrap_or(false) {

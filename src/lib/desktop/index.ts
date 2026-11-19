@@ -237,6 +237,7 @@ export interface DesktopIgWatcherStatus {
   state: "disabled" | "starting" | "watching" | "needs_login";
   lastCheckedMs: number | null;
   lastError: string | null;
+  lastDebug?: string | null;
 }
 
 export interface DesktopIgObservedThread {

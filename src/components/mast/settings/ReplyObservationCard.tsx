@@ -428,9 +428,12 @@ export function ReplyObservationCard({
                 Sign in to Instagram <strong className="text-foreground">once</strong> inside the MAST Desktop app. No Chrome extension or copy-paste needed—your session stays saved locally and quietly notifies <strong className="text-foreground">both the app and website</strong> whenever a contacted lead replies in DMs.
               </p>
 
-              {igWatcher.status?.lastCheckedMs && (
+              {(igWatcher.status?.lastCheckedMs || igWatcher.status?.lastDebug) && (
                 <p className="text-[11px] text-muted-foreground">
-                  Last checked: {new Date(igWatcher.status.lastCheckedMs).toLocaleTimeString()}
+                  {igWatcher.status?.lastCheckedMs
+                    ? `Last checked: ${new Date(igWatcher.status.lastCheckedMs).toLocaleTimeString()}`
+                    : "Watcher active"}
+                  {igWatcher.status?.lastDebug ? ` · ${igWatcher.status.lastDebug}` : ""}
                 </p>
               )}
 

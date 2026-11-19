@@ -68,10 +68,7 @@ export function useDesktopIgWatcherBackground(enabled: boolean) {
 
       const freshEvents = (payload.events || []).filter((ev) => {
         const key = `${ev.handle || ev.displayName || ""}:${ev.previewText || "unread"}`;
-        if (!key || sentKeysRef.current.has(key)) return false;
-        if (sentKeysRef.current.size > 400) sentKeysRef.current.clear();
-        sentKeysRef.current.add(key);
-        return true;
+        return Boolean(key) && !sentKeysRef.current.has(key);
       });
 
       if (freshEvents.length > 0) {
@@ -86,6 +83,11 @@ export function useDesktopIgWatcherBackground(enabled: boolean) {
               observedAt: new Date().toISOString(),
             })),
           );
+          for (const ev of freshEvents) {
+            const key = `${ev.handle || ev.displayName || ""}:${ev.previewText || "unread"}`;
+            if (sentKeysRef.current.size > 400) sentKeysRef.current.clear();
+            sentKeysRef.current.add(key);
+          }
         } catch (err) {
           console.warn("[desktop-ig-watcher] ig-sync failed:", err);
         }

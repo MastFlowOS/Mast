@@ -31,6 +31,7 @@ pub struct IgWatcherReportPayload {
     pub state: String,
     #[serde(default)]
     pub events: Vec<IgObservedThread>,
+    pub debug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +44,7 @@ pub struct IgWatcherStatus {
     pub state: String,
     pub last_checked_ms: Option<u64>,
     pub last_error: Option<String>,
+    pub last_debug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +61,7 @@ pub struct IgWatcherInner {
     pub state: String,
     pub last_checked_ms: Option<u64>,
     pub last_error: Option<String>,
+    pub last_debug: Option<String>,
     pub auto_hide_on_login: bool,
     pub force_close: bool,
 }
@@ -80,6 +83,7 @@ impl IgWatcherState {
                 state: initial_state.to_string(),
                 last_checked_ms: None,
                 last_error: None,
+                last_debug: None,
                 auto_hide_on_login: false,
                 force_close: false,
             })),
@@ -111,6 +115,7 @@ impl IgWatcherState {
             state: guard.state.clone(),
             last_checked_ms: guard.last_checked_ms,
             last_error: guard.last_error.clone(),
+            last_debug: guard.last_debug.clone(),
         }
     }
 }
@@ -207,48 +212,94 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
   if (host !== "www.instagram.com" && host !== "instagram.com") return;
 
   const sentSignatures = new Set();
-  const networkThreadsByKey = new Map();
   let lastReportedState = "";
   let scanTimer = null;
   let redirectedToInbox = false;
 
-  function invokeReport(state, events) {
+  function invokeReport(state, events, debug) {
     try {
       const internals = window.__TAURI_INTERNALS__;
       if (!internals || typeof internals.invoke !== "function") return;
       internals.invoke("report_ig_watcher_state", {
-        payload: { state, events: Array.isArray(events) ? events : [] }
+        payload: {
+          state,
+          events: Array.isArray(events) ? events : [],
+          debug: typeof debug === "string" ? debug.slice(0, 260) : null
+        }
       }).catch(() => {});
     } catch (_) {}
+  }
+
+  function getCookie(name) {
+    const m = document.cookie.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]*)"));
+    return m ? decodeURIComponent(m[1]) : "";
   }
 
   function stripXssi(text) {
     return typeof text === "string" ? text.replace(/^for\s*\(\s*;\s*;\s*\)\s*;?\s*/, "") : "";
   }
 
-  function collectThreadsFromPayload(node, viewerPk, out, depth) {
-    if (!node || typeof node !== "object" || depth > 8) return;
+  function extractThreadParticipants(node) {
+    if (Array.isArray(node.users) && node.users.length > 0) {
+      return node.users.map((u) => ({
+        pk: u && (u.pk || u.id || u.pk_id) ? String(u.pk || u.id || u.pk_id) : null,
+        username: u && u.username ? String(u.username).trim().toLowerCase() : null,
+        fullName: u && (u.full_name || u.name) ? String(u.full_name || u.name).trim() : null,
+      }));
+    }
+    const edges =
+      (node.all_participants && node.all_participants.edges) ||
+      (node.participants && node.participants.edges) ||
+      [];
+    if (Array.isArray(edges) && edges.length > 0) {
+      return edges.map((e) => {
+        const actor = (e && e.node && (e.node.messaging_actor || e.node)) || {};
+        return {
+          pk: actor.id || actor.pk ? String(actor.id || actor.pk) : null,
+          username: actor.username ? String(actor.username).trim().toLowerCase() : null,
+          fullName: actor.name || actor.full_name ? String(actor.name || actor.full_name).trim() : null,
+        };
+      });
+    }
+    return [];
+  }
+
+  function collectThreadsFromPayload(node, viewerPk, out, depth, forceUnread) {
+    if (!node || typeof node !== "object" || depth > 9) return;
     if (Array.isArray(node)) {
-      for (const item of node) collectThreadsFromPayload(item, viewerPk, out, depth + 1);
+      for (const item of node) collectThreadsFromPayload(item, viewerPk, out, depth + 1, forceUnread);
       return;
     }
 
-    // Standard IG direct_v2 thread shape
-    if (Array.isArray(node.users) && (node.thread_id || node.thread_v2_id || node.thread_key)) {
+    const participants = extractThreadParticipants(node);
+    const tid = node.thread_id || node.thread_v2_id || (node.thread_key && node.thread_key.thread_fbid) || "";
+    if (participants.length > 0 && tid) {
       const unreadCount = Number(node.unread_count || 0);
       const readState = Number(node.read_state || 0);
-      const isUnread = readState === 1 || unreadCount > 0 || node.has_unread === true;
+      const watermark = Number(node.read_watermark_timestamp_ms || 0);
+      const lastActivity = Number(node.last_activity_timestamp_ms || 0);
+      const isUnread =
+        Boolean(forceUnread) ||
+        readState === 1 ||
+        unreadCount > 0 ||
+        node.has_unread === true ||
+        node.is_unread === true ||
+        (watermark > 0 && lastActivity > watermark);
+
       const lastItem = node.last_permanent_item || node.last_message || null;
-      const lastSenderPk = lastItem && (lastItem.user_id || lastItem.sender_id);
+      const lastSenderPk =
+        (lastItem && (lastItem.user_id || lastItem.sender_id)) ||
+        (lastItem && lastItem.message_sender && lastItem.message_sender.id);
       const fromSelf = viewerPk && lastSenderPk && String(lastSenderPk) === String(viewerPk);
 
       if (isUnread && !fromSelf) {
-        const user = node.users.find((u) => u && (u.username || u.full_name)) || node.users[0];
-        const handle = user && user.username ? String(user.username).trim().toLowerCase() : null;
+        const other =
+          participants.find((p) => (!viewerPk || p.pk !== String(viewerPk)) && (p.username || p.fullName)) ||
+          participants[0];
+        const handle = other && other.username ? other.username : null;
         const displayName =
-          (user && user.full_name ? String(user.full_name).trim() : null) ||
+          (other && other.fullName ? other.fullName : null) ||
           (node.thread_title ? String(node.thread_title).trim() : null);
-        const tid = node.thread_id || node.thread_v2_id || "";
         const previewText =
           (lastItem && (lastItem.text || lastItem.snippet) ? String(lastItem.text || lastItem.snippet).trim() : null) ||
           "Sent a message on Instagram";
@@ -257,7 +308,7 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
             handle,
             displayName,
             previewText: previewText.slice(0, 300),
-            threadUrl: tid ? `https://www.instagram.com/direct/t/${tid}/` : "https://www.instagram.com/direct/inbox/",
+            threadUrl: `https://www.instagram.com/direct/t/${tid}/`,
             unread: true,
           });
         }
@@ -266,7 +317,7 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
 
     for (const key of ["inbox", "data", "viewer", "threads", "edges", "node", "thread", "ig_direct_inbox", "xfb_fetch_inbox_threads"]) {
       if (node[key] && typeof node[key] === "object") {
-        collectThreadsFromPayload(node[key], viewerPk, out, depth + 1);
+        collectThreadsFromPayload(node[key], viewerPk, out, depth + 1, forceUnread);
       }
     }
   }
@@ -280,15 +331,15 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       const viewerPk =
         (json && json.viewer && (json.viewer.pk || json.viewer.id)) ||
         (json && json.inbox && json.inbox.viewer_id) ||
+        getCookie("ds_user_id") ||
         null;
       const found = [];
-      collectThreadsFromPayload(json, viewerPk, found, 0);
+      collectThreadsFromPayload(json, viewerPk, found, 0, url.includes("pending_inbox"));
       if (found.length === 0) return;
 
       const fresh = [];
       for (const ev of found) {
-        const sig = `${ev.handle || ev.displayName}:${ev.previewText}`;
-        networkThreadsByKey.set(sig, ev);
+        const sig = `${ev.handle || ev.displayName}:${ev.threadUrl}:${ev.previewText}`;
         if (sentSignatures.has(sig)) continue;
         if (sentSignatures.size > 500) sentSignatures.clear();
         sentSignatures.add(sig);
@@ -296,18 +347,20 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       }
       if (fresh.length > 0 && !isLoginOrChallenge() && !isAuthTransitionPage()) {
         lastReportedState = "watching";
-        invokeReport("watching", fresh);
+        const labels = fresh.map((e) => e.handle ? `@${e.handle}` : e.displayName).slice(0, 3).join(", ");
+        invokeReport("watching", fresh, `Net: ${fresh.length} unread (${labels})`);
       }
     } catch (_) {}
   }
 
+  const origFetchRef = window.fetch ? window.fetch.bind(window) : null;
+
   // Passive read-only tap on IG's own fetch/XHR inbox responses (zero extra requests)
   try {
-    const origFetch = window.fetch;
-    if (typeof origFetch === "function") {
+    if (typeof origFetchRef === "function") {
       window.fetch = function (...args) {
         const reqUrl = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
-        return origFetch.apply(this, args).then((res) => {
+        return origFetchRef(...args).then((res) => {
           try {
             if (reqUrl.includes("direct_v2") || reqUrl.includes("graphql")) {
               res.clone().text().then((t) => handleIgNetworkJson(reqUrl, t)).catch(() => {});
@@ -369,76 +422,186 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     }
     // Verify IG actually rendered the signed-in app shell / DM view
     return Boolean(
-      document.querySelector('[role="navigation"], [role="list"], a[href*="/direct/"]')
+      document.querySelector('[aria-label="Thread list"], [role="navigation"], [role="list"], a[href*="/direct/"]')
     );
   }
 
-  function extractHandleFromReactFiber(el) {
-    try {
-      const fiberKey = Object.keys(el).find(
-        (k) => k.startsWith("__reactFiber$") || k.startsWith("__reactProps$")
-      );
-      if (!fiberKey) return null;
-      let node = el[fiberKey];
-      for (let step = 0; step < 8 && node; step++) {
-        const props = node.memoizedProps || node;
-        const candidates = [props, props && props.thread, props && props.item, props && props.user];
-        for (const c of candidates) {
-          if (!c || typeof c !== "object") continue;
-          if (typeof c.username === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$/.test(c.username)) {
-            return c.username.toLowerCase();
-          }
-          if (Array.isArray(c.users) && c.users[0] && typeof c.users[0].username === "string") {
-            return c.users[0].username.toLowerCase();
-          }
+  function findRelayStoreRecords(startFiber) {
+    let cur = startFiber;
+    for (let step = 0; step < 50 && cur; step++) {
+      let ctx = cur.dependencies && cur.dependencies.firstContext;
+      while (ctx) {
+        const mv = ctx.memoizedValue;
+        const env = mv && typeof mv === "object"
+          ? (typeof mv.getStore === "function" ? mv : mv.environment)
+          : null;
+        if (env && typeof env.getStore === "function") {
+          const src = env.getStore().getSource();
+          const recs = src && typeof src.toJSON === "function" ? src.toJSON() : (src && src._records) || null;
+          if (recs && typeof recs === "object") return recs;
         }
-        node = node.return;
+        ctx = ctx.next;
       }
-    } catch (_) {}
+      cur = cur.return;
+    }
     return null;
   }
 
-  function extractHandleFromElement(row) {
+  function isValidIgHandle(val) {
+    return typeof val === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$/.test(val.trim());
+  }
+
+  function resolveRelayThreadInfo(row, cachedRecs) {
+    const out = { handle: null, displayName: null, threadUrl: null, recs: cachedRecs || null };
+    try {
+      const fiberKey = Object.keys(row).find(
+        (k) => k.startsWith("__reactFiber$") || k.startsWith("__reactProps$")
+      );
+      if (!fiberKey) return out;
+      let node = row[fiberKey];
+      let threadRecordId = null;
+      let threadKey = null;
+      let threadFbid = null;
+
+      for (let step = 0; step < 18 && node; step++) {
+        const props = node.memoizedProps || node;
+        if (props && typeof props === "object") {
+          const refObjs = [
+            props.viewerThreadRef,
+            props.threadRef,
+            props.addOnEnd && props.addOnEnd.props && props.addOnEnd.props.threadRef,
+            props.thread,
+            props.item,
+            props.user,
+          ];
+          for (const c of refObjs) {
+            if (!c || typeof c !== "object") continue;
+            if (!threadRecordId && typeof c.__id === "string" && c.__id.includes("ViewerThread")) {
+              threadRecordId = c.__id;
+            }
+            if (!threadKey && c.thread_key) threadKey = String(c.thread_key);
+            if (!threadFbid && (c.thread_fbid || c.id)) threadFbid = String(c.thread_fbid || c.id);
+            const rawUser = c.username || c.ig_username;
+            if (!out.handle && isValidIgHandle(rawUser)) {
+              out.handle = rawUser.trim().toLowerCase();
+            }
+            if (!out.handle && Array.isArray(c.users) && c.users[0] && isValidIgHandle(c.users[0].username)) {
+              out.handle = c.users[0].username.trim().toLowerCase();
+            }
+          }
+        }
+        if (!out.recs && step >= 3) {
+          out.recs = findRelayStoreRecords(node);
+        }
+        node = node.return;
+      }
+
+      const recs = out.recs;
+      if (recs) {
+        let rec =
+          (threadRecordId && recs[threadRecordId]) ||
+          (threadFbid && recs[`XFBIGDirectViewerThread:${threadFbid}`]) ||
+          null;
+        if (!rec && (threadKey || threadFbid)) {
+          for (const key of Object.keys(recs)) {
+            const candidate = recs[key];
+            if (!candidate || candidate.__typename !== "XFBIGDirectViewerThread") continue;
+            if (
+              (threadKey && String(candidate.thread_key || "") === threadKey) ||
+              (threadFbid && String(candidate.thread_fbid || candidate.id || "") === threadFbid)
+            ) {
+              rec = candidate;
+              break;
+            }
+          }
+        }
+        if (rec) {
+          const resolvedKey = rec.thread_key || rec.thread_fbid || rec.id || threadKey || threadFbid;
+          if (resolvedKey) {
+            out.threadUrl = `https://www.instagram.com/direct/t/${resolvedKey}/`;
+          }
+          if (!out.displayName && typeof rec.thread_title === "string" && rec.thread_title.trim()) {
+            out.displayName = rec.thread_title.trim();
+          }
+          const viewerId = rec.viewer_id ? String(rec.viewer_id) : null;
+          const viewerRef = rec.viewer && rec.viewer.__ref ? rec.viewer.__ref : null;
+          const userRefs = [
+            ...((rec.users && Array.isArray(rec.users.__refs) && rec.users.__refs) || []),
+            ...((rec.all_participants && Array.isArray(rec.all_participants.__refs) && rec.all_participants.__refs) || []),
+            ...((rec.participants && Array.isArray(rec.participants.__refs) && rec.participants.__refs) || []),
+          ];
+          for (const ref of userRefs) {
+            if (!ref || ref === viewerRef) continue;
+            const u = recs[ref];
+            if (!u || typeof u !== "object") continue;
+            const uid = u.pk || u.id || u.pk_id;
+            if (viewerId && uid && String(uid) === viewerId) continue;
+            const uname = u.username || u.ig_username;
+            if (!out.handle && isValidIgHandle(uname)) {
+              out.handle = uname.trim().toLowerCase();
+            }
+            if (!out.displayName && (u.full_name || u.name)) {
+              out.displayName = String(u.full_name || u.name).trim();
+            }
+            if (out.handle) break;
+          }
+        }
+      } else if (threadKey || threadFbid) {
+        out.threadUrl = `https://www.instagram.com/direct/t/${threadKey || threadFbid}/`;
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function extractHandleFromElement(row, relayHandle) {
+    if (isValidIgHandle(relayHandle)) return relayHandle.trim().toLowerCase();
+
     const links = row.querySelectorAll('a[href*="/direct/t/"], a[href^="/"]');
     for (const a of links) {
       const href = a.getAttribute("href") || "";
       if (href.startsWith("/") && !href.startsWith("/direct") && !href.startsWith("/explore") && !href.startsWith("/reels")) {
         const seg = href.replace(/^\/+/, "").split("/")[0];
-        if (/^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$/.test(seg)) {
+        if (isValidIgHandle(seg)) {
           return seg.toLowerCase();
         }
       }
     }
-
-    const fiberHandle = extractHandleFromReactFiber(row);
-    if (fiberHandle) return fiberHandle;
 
     const text = (row.innerText || "").trim();
     const atMatch = text.match(/@([A-Za-z0-9_][A-Za-z0-9_.]{1,29})/);
     if (atMatch) return atMatch[1].toLowerCase();
 
     const firstLine = (text.split("\n")[0] || "").trim();
-    if (/^[A-Za-z0-9_][A-Za-z0-9_.]{1,29}$/.test(firstLine) && !firstLine.includes(" ")) {
+    if (isValidIgHandle(firstLine) && !firstLine.includes(" ")) {
       return firstLine.toLowerCase();
     }
     return null;
   }
 
-  function looksUnread(row) {
+  function looksUnread(row, lines) {
+    if (Array.isArray(lines) && lines.some((l) => /^unread$/i.test(l))) {
+      return true;
+    }
     const aria = (row.getAttribute("aria-label") || "").toLowerCase();
     if (aria.includes("unread")) return true;
     if (row.querySelector('[aria-label*="Unread" i], [aria-label*="unread" i]')) return true;
+
+    const inThreadList = Boolean(row.closest('[aria-label="Thread list"]'));
     const spans = row.querySelectorAll("span, div");
     for (const sp of spans) {
       if (sp.children && sp.children.length === 0) {
         try {
           const cs = window.getComputedStyle(sp);
-          if (cs.backgroundColor === "rgb(0, 149, 246)" && parseFloat(cs.width) <= 14) {
+          if (
+            (cs.backgroundColor === "rgb(0, 149, 246)" || cs.backgroundColor === "rgb(0, 100, 224)") &&
+            parseFloat(cs.width) <= 14 &&
+            parseFloat(cs.height) <= 14
+          ) {
             return true;
           }
         } catch (_) {}
       }
-      if (!sp.textContent || !sp.textContent.trim()) continue;
+      if (inThreadList || !sp.textContent || !sp.textContent.trim()) continue;
       if (sp.style && (sp.style.fontWeight === "600" || sp.style.fontWeight === "700")) {
         return true;
       }
@@ -452,7 +615,20 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     return false;
   }
 
-  function scanVisibleThreads(forceReport = false) {
+  function buildPreviewText(lines) {
+    const meaningful = lines.slice(1).filter((l) => {
+      if (!l || l === "·" || l === "•") return false;
+      if (/^unread$/i.test(l)) return false;
+      if (/^\d+\s*[smhdwy]$/i.test(l) || /^just now$/i.test(l)) return false;
+      return true;
+    });
+    if (meaningful.length > 0) {
+      return meaningful.slice(0, 2).join(" · ").slice(0, 300);
+    }
+    return "Sent a message on Instagram";
+  }
+
+  async function scanVisibleThreads(forceReport = false) {
     if (isLoginOrChallenge()) {
       if (forceReport || lastReportedState !== "needs_login") {
         lastReportedState = "needs_login";
@@ -494,10 +670,13 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     }
 
     const candidates = document.querySelectorAll(
-      '[role="listitem"], [role="row"], [role="list"] [role="button"], a[href*="/direct/t/"]'
+      '[aria-label="Thread list"] [role="button"], [role="listitem"], [role="row"], [role="list"] [role="button"], a[href*="/direct/t/"]'
     );
     const seenContainers = new Set();
     const events = [];
+    const unreadLabels = [];
+    let cachedRelayRecs = null;
+    let unreadRowCount = 0;
 
     for (const el of candidates) {
       const container = el.closest('[role="listitem"], [role="row"]') || el;
@@ -508,19 +687,29 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       if (!text) continue;
       const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
       if (lines.length < 2) continue;
-      if (!looksUnread(container)) continue;
+      if (!looksUnread(container, lines)) continue;
+      unreadRowCount += 1;
 
-      const handle = extractHandleFromElement(container);
-      const displayName = lines[0] || null;
+      const relayInfo = resolveRelayThreadInfo(container, cachedRelayRecs);
+      if (relayInfo.recs && !cachedRelayRecs) cachedRelayRecs = relayInfo.recs;
+
+      const handle = extractHandleFromElement(container, relayInfo.handle);
+      const displayName = lines[0] || relayInfo.displayName || null;
       if (!handle && !displayName) continue;
 
-      const previewText = lines.slice(1, 3).join(" · ").slice(0, 300) || null;
+      if (unreadLabels.length < 4) {
+        unreadLabels.push(handle ? `@${handle}` : displayName);
+      }
+
+      const previewText = buildPreviewText(lines);
       const linkEl = container.querySelector('a[href*="/direct/t/"]') || (container.tagName === "A" ? container : null);
       const href = linkEl ? linkEl.getAttribute("href") : null;
-      const threadUrl = href && href.startsWith("/") ? "https://www.instagram.com" + href : window.location.href;
+      const threadUrl =
+        relayInfo.threadUrl ||
+        (href && href.startsWith("/") ? "https://www.instagram.com" + href : window.location.href);
 
-      const sig = `${handle || displayName}:${previewText || "unread"}`;
-      if (sentSignatures.has(sig)) continue;
+      const sig = `${handle || displayName}:${threadUrl}:${previewText}`;
+      if (!forceReport && sentSignatures.has(sig)) continue;
       if (sentSignatures.size > 500) sentSignatures.clear();
       sentSignatures.add(sig);
 
@@ -535,7 +724,9 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
 
     if (forceReport || lastReportedState !== "watching" || events.length > 0) {
       lastReportedState = "watching";
-      invokeReport("watching", events);
+      const labelSuffix = unreadLabels.length > 0 ? ` (${unreadLabels.join(", ")})` : "";
+      const summary = `List: ${seenContainers.size} rows · ${unreadRowCount} unread${labelSuffix}`;
+      invokeReport("watching", events, summary);
     }
   }
 
@@ -554,7 +745,8 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       observer.observe(document.body, { childList: true, subtree: true });
     }
     setTimeout(() => scanVisibleThreads(false), 2200);
-    setInterval(() => scanVisibleThreads(false), 12000);
+    setTimeout(() => scanVisibleThreads(true), 6000);
+    setInterval(() => scanVisibleThreads(false), 15000);
   }
 
   if (document.readyState === "loading") {
@@ -601,7 +793,7 @@ pub fn create_or_show_watcher(
 
     WebviewWindowBuilder::new(app, IG_WATCHER_LABEL, WebviewUrl::External(url))
         .title("Instagram Reply Watcher — MAST")
-        .inner_size(480.0, 720.0)
+        .inner_size(920.0, 720.0)
         .resizable(true)
         .center()
         .visible(visible)
@@ -638,6 +830,9 @@ pub fn handle_ig_watcher_report(
         guard.state = normalized_state.to_string();
         guard.last_checked_ms = Some(now_epoch_ms());
         guard.last_error = None;
+        if let Some(dbg) = payload.debug.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            guard.last_debug = Some(dbg.to_string());
+        }
 
         if normalized_state == "watching" {
             guard.connected = true;
@@ -665,8 +860,21 @@ pub fn handle_ig_watcher_report(
 
     let status = watcher_state.snapshot(app);
     let sanitized_events = sanitize_events(payload.events);
-    let _ = app.emit_to(
-        "main",
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[IG WATCHER REPORT] state={} events={} debug={:?}",
+            status.state,
+            sanitized_events.len(),
+            status.last_debug
+        );
+        for ev in &sanitized_events {
+            eprintln!(
+                "  -> thread handle={:?} display={:?} url={:?}",
+                ev.handle, ev.display_name, ev.thread_url
+            );
+        }
+    }
+    let _ = app.emit(
         "ig-watcher-update",
         IgWatcherUpdateEvent {
             status: status.clone(),

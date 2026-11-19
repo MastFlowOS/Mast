@@ -112,6 +112,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       action = "generate",
       tone = "friendly",
       template,
+      lengthPreference,
       customInstructions,
       subject: clientSubject,
       body: clientBody,
@@ -374,6 +375,10 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       action: action as OutreachAction,
       tone: tone as OutreachTone,
       template,
+      lengthPreference:
+        lengthPreference === "short" || lengthPreference === "standard" || lengthPreference === "detailed"
+          ? lengthPreference
+          : undefined,
       customInstructions,
       senderName: senderName || fullName,
       contextNotes: effectiveContextNotes || undefined,
@@ -395,6 +400,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         reviewsRating: (business?.reviews_rating as number) || undefined,
         websiteIsWeak: (business?.website_is_weak as boolean) || undefined,
         loadTimeMs: (business?.load_time_ms as number) || undefined,
+        signals: (business?.signals as Record<string, unknown> | undefined) || undefined,
       },
       freelancer: {
         profession: focusArea || (lead.profession_slug ? lead.profession_slug.replace(/_/g, " ") : undefined),

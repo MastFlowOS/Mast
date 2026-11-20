@@ -186,6 +186,7 @@ export function AIAssistant({
             lead={lead}
             researchQuestion={researchQuestion}
             setResearchQuestion={setResearchQuestion}
+            onInsert={onInsert}
           />
         )}
       </div>

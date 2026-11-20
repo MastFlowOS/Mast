@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useCallback, useEffect, useState } from "react";
 import { SiteNav } from "@/components/mast/SiteNav";
 import { SiteFooter } from "@/components/mast/SiteFooter";
-import { CheckCircle2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { getBackendBaseUrl } from "@/lib/api";
 
 export const Route = createFileRoute("/status")({
   head: () => ({
@@ -13,16 +15,26 @@ export const Route = createFileRoute("/status")({
   component: StatusPage,
 });
 
-const services = [
-  { name: "API & Lead Generation", status: "operational" as const },
-  { name: "Relationship Data & Focus", status: "operational" as const },
-  { name: "Authentication", status: "operational" as const },
-  { name: "Google Sheets Sync", status: "operational" as const },
-  { name: "Email Enrichment", status: "operational" as const },
-  { name: "Instagram Enrichment", status: "operational" as const },
-];
+type ServiceStatus = "operational" | "degraded" | "outage" | "checking";
 
-const statusConfig = {
+interface ServiceItem {
+  name: string;
+  detail: string;
+  status: ServiceStatus;
+}
+
+interface HealthResponse {
+  ok?: boolean;
+  timestamp?: string;
+  checks?: {
+    api?: boolean;
+    database?: boolean;
+    aiConfigured?: boolean;
+    inboxCryptoConfigured?: boolean;
+  };
+}
+
+const statusConfig: Record<ServiceStatus, { label: string; dot: string; badge: string }> = {
   operational: {
     label: "Operational",
     dot: "bg-success",
@@ -38,10 +50,121 @@ const statusConfig = {
     dot: "bg-destructive",
     badge: "bg-destructive/10 text-destructive border-destructive/20",
   },
-} as const;
+  checking: {
+    label: "Checking",
+    dot: "bg-muted-foreground animate-pulse",
+    badge: "bg-muted/40 text-muted-foreground border-border/60",
+  },
+};
+
+function buildServices(health: HealthResponse | null, errorMsg: string | null, loading: boolean): ServiceItem[] {
+  if (loading && !health) {
+    return [
+      { name: "API Gateway & Lead Discovery", detail: "Checking backend health...", status: "checking" },
+      { name: "Database, CRM & Authentication", detail: "Checking Postgres connectivity...", status: "checking" },
+      { name: "AI Outreach & Intelligence", detail: "Checking AI provider status...", status: "checking" },
+      { name: "Reply Observation & Notifications", detail: "Checking inbox & realtime pipeline...", status: "checking" },
+    ];
+  }
+
+  if (errorMsg || !health) {
+    return [
+      {
+        name: "API Gateway & Lead Discovery",
+        detail: errorMsg || "Gateway unreachable",
+        status: "outage",
+      },
+      {
+        name: "Database, CRM & Authentication",
+        detail: "Cannot verify while gateway is unreachable",
+        status: "degraded",
+      },
+      {
+        name: "AI Outreach & Intelligence",
+        detail: "Cannot verify while gateway is unreachable",
+        status: "degraded",
+      },
+      {
+        name: "Reply Observation & Notifications",
+        detail: "Cannot verify while gateway is unreachable",
+        status: "degraded",
+      },
+    ];
+  }
+
+  const checks = health.checks ?? {};
+  const apiUp = checks.api ?? true;
+  const dbUp = checks.database ?? Boolean(health.ok);
+  const aiUp = checks.aiConfigured ?? false;
+  const inboxUp = dbUp && (checks.inboxCryptoConfigured ?? false);
+
+  return [
+    {
+      name: "API Gateway & Lead Discovery",
+      detail: apiUp ? "Express gateway responding normally" : "Gateway error",
+      status: apiUp ? "operational" : "outage",
+    },
+    {
+      name: "Database, CRM & Authentication",
+      detail: dbUp ? "Supabase Postgres queries responding" : "Database connection check failed",
+      status: dbUp ? "operational" : "outage",
+    },
+    {
+      name: "AI Outreach & Intelligence",
+      detail: aiUp ? "AI provider configured and ready" : "AI provider key not configured on this server",
+      status: aiUp ? "operational" : "degraded",
+    },
+    {
+      name: "Reply Observation & Notifications",
+      detail: inboxUp
+        ? "IMAP encryption & notification pipeline ready"
+        : dbUp
+          ? "SMTP/IMAP encryption key not configured"
+          : "Waiting on database connectivity",
+      status: inboxUp ? "operational" : "degraded",
+    },
+  ];
+}
 
 function StatusPage() {
-  const allOperational = services.every((s) => s.status === "operational");
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [lastChecked, setLastChecked] = useState<string | null>(null);
+
+  const runCheck = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    const baseUrl = getBackendBaseUrl()?.replace(/\/+$/, "") || "";
+    const endpoint = baseUrl ? `${baseUrl}/health` : "/health";
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(endpoint, { signal: controller.signal });
+      clearTimeout(timer);
+      const data = (await res.json().catch(() => null)) as HealthResponse | null;
+      if (!data) {
+        throw new Error(`Unexpected response (HTTP ${res.status})`);
+      }
+      setHealth(data);
+      setLastChecked(data.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString());
+    } catch (err) {
+      setHealth(null);
+      setErrorMsg(err instanceof Error ? err.message : "Could not reach Mast API");
+      setLastChecked(new Date().toLocaleString());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void runCheck();
+  }, [runCheck]);
+
+  const services = buildServices(health, errorMsg, loading);
+  const hasOutage = services.some((s) => s.status === "outage");
+  const hasDegraded = services.some((s) => s.status === "degraded");
+  const allOperational = !loading && services.every((s) => s.status === "operational");
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -50,13 +173,24 @@ function StatusPage() {
       {/* Hero */}
       <section className="relative pt-24 pb-14 px-6 overflow-hidden">
         <div className="pointer-events-none absolute inset-0 bg-grid opacity-[0.12] [mask-image:radial-gradient(ellipse_at_top,black_20%,transparent_65%)]" />
-        <div className="relative max-w-3xl mx-auto">
-          <h1 className="text-[clamp(2rem,5vw,3rem)] font-bold tracking-tight text-foreground">
-            System Status
-          </h1>
-          <p className="mt-3 text-sm text-muted-foreground">
-            Real-time operational status for all Mast services.
-          </p>
+        <div className="relative max-w-3xl mx-auto flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <h1 className="text-[clamp(2rem,5vw,3rem)] font-bold tracking-tight text-foreground">
+              System Status
+            </h1>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Live operational checks from the Mast API gateway and database.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void runCheck()}
+            disabled={loading}
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-border/70 bg-card hover:bg-muted text-xs font-semibold text-foreground transition-colors disabled:opacity-60 self-start sm:self-auto"
+          >
+            {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+            Refresh
+          </button>
         </div>
       </section>
 
@@ -66,18 +200,36 @@ function StatusPage() {
           {/* Overall banner */}
           <div
             className={`flex items-center gap-3 p-5 rounded-2xl border ${
-              allOperational
-                ? "bg-success/5 border-success/20 text-success"
-                : "bg-warning/5 border-warning/20 text-warning"
+              loading && !health
+                ? "bg-muted/20 border-border/60 text-muted-foreground"
+                : hasOutage
+                  ? "bg-destructive/5 border-destructive/20 text-destructive"
+                  : allOperational
+                    ? "bg-success/5 border-success/20 text-success"
+                    : "bg-warning/5 border-warning/20 text-warning"
             }`}
           >
-            <CheckCircle2 className="size-5 shrink-0" />
+            {loading && !health ? (
+              <Loader2 className="size-5 shrink-0 animate-spin" />
+            ) : hasOutage ? (
+              <XCircle className="size-5 shrink-0" />
+            ) : hasDegraded ? (
+              <AlertTriangle className="size-5 shrink-0" />
+            ) : (
+              <CheckCircle2 className="size-5 shrink-0" />
+            )}
             <div>
               <p className="text-sm font-semibold">
-                {allOperational ? "All systems operational" : "Some systems are experiencing issues"}
+                {loading && !health
+                  ? "Checking live system status..."
+                  : hasOutage
+                    ? "System disruption detected"
+                    : hasDegraded
+                      ? "Core systems operational — optional services degraded"
+                      : "All systems operational"}
               </p>
               <p className="text-xs opacity-70 mt-0.5">
-                Last checked: {new Date().toLocaleString()}
+                Last checked: {lastChecked ?? "Checking..."}
               </p>
             </div>
           </div>
@@ -89,16 +241,19 @@ function StatusPage() {
               return (
                 <div
                   key={service.name}
-                  className={`flex items-center justify-between px-5 py-4 ${
+                  className={`flex items-center justify-between gap-4 px-5 py-4 ${
                     i < services.length - 1 ? "border-b border-border/40" : ""
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <span className={`size-2 rounded-full ${cfg.dot}`} />
-                    <span className="text-sm font-medium text-foreground">{service.name}</span>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className={`size-2 rounded-full shrink-0 ${cfg.dot}`} />
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-foreground block">{service.name}</span>
+                      <span className="text-xs text-muted-foreground block truncate">{service.detail}</span>
+                    </div>
                   </div>
                   <span
-                    className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md border ${cfg.badge}`}
+                    className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md border shrink-0 ${cfg.badge}`}
                   >
                     {cfg.label}
                   </span>
@@ -106,10 +261,6 @@ function StatusPage() {
               );
             })}
           </div>
-
-          <p className="text-xs text-muted-foreground/60 pt-2">
-            This is a placeholder status page. For incident notifications, sign up for updates at status@mast.so.
-          </p>
         </div>
       </section>
 

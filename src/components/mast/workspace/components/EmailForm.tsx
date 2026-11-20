@@ -1,10 +1,16 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Mail, Send, CheckCircle, Loader2 } from "lucide-react";
+import { Mail, Send, CheckCircle, Loader2, Ban, AlertTriangle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useRecordLeadActivity, useSendLeadEmail } from "@/hooks/use-mast-api";
+import {
+  useAddSuppression,
+  useLeadSafetyCheck,
+  useOutreachPacing,
+  useRecordLeadActivity,
+  useSendLeadEmail,
+} from "@/hooks/use-mast-api";
 import { ApiError, isMissingBackendEndpoint, type Lead } from "@/lib/api";
 import { openGmailComposePopup } from "@/lib/externalPopup";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
@@ -24,6 +30,27 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
   );
   const sendEmail = useSendLeadEmail();
   const recordActivity = useRecordLeadActivity();
+  const safetyQuery = useLeadSafetyCheck(lead.id);
+  const pacingQuery = useOutreachPacing();
+  const addSuppression = useAddSuppression();
+
+  const isBlocked = Boolean(safetyQuery?.data?.blocked);
+  const blockMatch = safetyQuery?.data?.match;
+  const emailPacing = pacingQuery?.data?.email;
+
+  const handleQuickBlock = async () => {
+    if (!lead.email) return;
+    try {
+      await addSuppression.mutateAsync({
+        kind: "email",
+        value: lead.email,
+        reason: `Blocked from ${lead.businessName} workspace`,
+      });
+      toast.success(`${lead.email} added to Do-Not-Contact list`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not block contact");
+    }
+  };
 
   useEffect(() => {
     setIsSent(["contacted", "email_sent"].includes(normalizeLeadStatus(lead.status)) && Boolean(lead.lastContactedAt));
@@ -118,6 +145,36 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
 
   return (
     <div className="space-y-5">
+      {isBlocked && (
+        <div
+          data-testid="dnc-blocked-banner"
+          className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-200 flex items-start gap-2.5"
+        >
+          <Ban className="size-4 text-red-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-semibold text-red-100">Do-Not-Contact: Outreach Blocked</p>
+            <p className="text-red-200/85">
+              Matched {blockMatch?.kind ?? "contact"} ({blockMatch?.value ?? lead.email}).
+              {blockMatch?.reason ? ` Reason: ${blockMatch.reason}.` : ""} Manage your blocklist in Settings.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isBlocked && emailPacing && emailPacing.level !== "ok" && emailPacing.message && (
+        <div
+          data-testid="email-pacing-warning"
+          className={`rounded-xl border px-4 py-2.5 text-xs flex items-start gap-2.5 ${
+            emailPacing.level === "danger"
+              ? "border-red-500/35 bg-red-500/10 text-red-200"
+              : "border-amber-500/35 bg-amber-500/10 text-amber-200"
+          }`}
+        >
+          <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+          <span>{emailPacing.message}</span>
+        </div>
+      )}
+
       <div className="space-y-2">
         <label className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
           Subject Line
@@ -147,7 +204,7 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
             variant="outline"
             size="sm"
             onClick={handleOpenMail}
-            disabled={recordActivity.isPending}
+            disabled={isBlocked || recordActivity.isPending}
             className="w-full gap-1.5 sm:w-auto"
           >
             <Mail className="size-4" />
@@ -155,9 +212,23 @@ export function EmailForm({ lead, subject, setSubject, body, setBody }: EmailFor
           </Button>
         )}
 
+        {lead.email && !isBlocked && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleQuickBlock}
+            disabled={addSuppression.isPending}
+            className="w-full gap-1.5 text-muted-foreground hover:text-red-400 sm:w-auto"
+            title="Add this email to your workspace Do-Not-Contact list"
+          >
+            <Ban className="size-3.5" />
+            Do Not Contact
+          </Button>
+        )}
+
         <Button
           onClick={handleSend}
-          disabled={!subject.trim() || !body.trim() || sendEmail.isPending || recordActivity.isPending}
+          disabled={isBlocked || !subject.trim() || !body.trim() || sendEmail.isPending || recordActivity.isPending}
           size="sm"
           className="w-full gap-1.5 bg-brand hover:bg-brand/90 text-brand-foreground sm:ml-auto sm:w-auto"
         >

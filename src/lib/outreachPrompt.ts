@@ -41,6 +41,18 @@ export interface FreelancerContext {
   profession?: string;
   professionSlug?: string;
   senderName?: string;
+  bookingUrl?: string;
+}
+
+export interface CustomUserPlaybook {
+  name: string;
+  instructions: string;
+  exampleMessages?: string | null;
+}
+
+export interface WebsiteVisualCritique {
+  visualSummary?: string | null;
+  auditBullets?: string[];
 }
 
 export interface PersonalizationSettings {
@@ -84,6 +96,8 @@ export interface BuildOutreachPromptParams {
   freelancer?: FreelancerContext;
   personalization?: PersonalizationSettings;
   sequenceHistory?: SequenceHistory;
+  userPlaybook?: CustomUserPlaybook;
+  websiteVisualCritique?: WebsiteVisualCritique;
 }
 
 /**
@@ -107,6 +121,8 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     freelancer,
     personalization = {},
     sequenceHistory,
+    userPlaybook,
+    websiteVisualCritique,
   } = params;
 
   // Determine whether this request represents a follow-up touch
@@ -183,6 +199,11 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     "- expand: Add helpful context or clearer reasoning using only grounded facts (no fluff).",
     "- objections: Acknowledge their hesitation genuinely with zero pressure and keep the door open.",
     "",
+    "### 9B. CUSTOM USER PLAYBOOK & VERIFIED VISUAL CRITIQUE (WHEN SUPPLIED)",
+    "- CUSTOM VOICE / PLAYBOOK (`userPlaybook`): When `userPlaybook` is present, prioritize its writing style, phrasing, rhythm, structure, offer, and examples so the draft genuinely sounds like THIS user talking. You MUST still obey Section 1 (never fabricate lead facts, metrics, or fake reviews) and Section 10 (strict JSON contract).",
+    "- VERIFIED VISUAL WEBSITE OBSERVATIONS (`websiteVisualCritique`): When `websiteVisualCritique` is present, its `visualSummary` and `auditBullets` come from an actual inspected homepage/screenshot—you MAY reference 1 concrete observation from it naturally (e.g. layout feel, missing booking CTA, mobile friction). Never exaggerate beyond what is stated in `websiteVisualCritique`.",
+    "- BOOKING LINK (`freelancerContext.bookingUrl`): Only include the user's booking link when replying to a warm/interested lead or when `customInstructions` / `userPlaybook` explicitly ask to share a scheduling link. Never shove a booking link into a cold first touch unless explicitly requested by the user's playbook.",
+    "",
     '### 10. OUTPUT CONTRACT: Respond with ONLY a valid JSON object matching the exact shape: {"subject": string | null, "body": string}. Use `\\n\\n` inside `body` for clean paragraph breaks where appropriate. No markdown code fences or extra keys.',
   ].join("\n");
 
@@ -206,7 +227,23 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
       profession: freelancer?.profession || "Independent Specialist",
       professionSlug: freelancer?.professionSlug || undefined,
       senderName: senderName || freelancer?.senderName || undefined,
+      bookingUrl: freelancer?.bookingUrl || undefined,
     },
+    userPlaybook: userPlaybook
+      ? {
+          name: userPlaybook.name,
+          instructions: userPlaybook.instructions,
+          exampleMessages: userPlaybook.exampleMessages || undefined,
+        }
+      : undefined,
+    websiteVisualCritique:
+      websiteVisualCritique &&
+      (websiteVisualCritique.visualSummary || (websiteVisualCritique.auditBullets && websiteVisualCritique.auditBullets.length > 0))
+        ? {
+            visualSummary: websiteVisualCritique.visualSummary || undefined,
+            auditBullets: websiteVisualCritique.auditBullets?.slice(0, 5),
+          }
+        : undefined,
     leadData: {
       businessName: lead.businessName || "the business",
       niche: pBusinessNameAndNiche ? lead.niche || undefined : undefined,

@@ -24,6 +24,10 @@ import {
   type InvestigateLeadResult,
   type LeadInvestigationContext,
 } from "../../lib/leadInvestigate.js";
+import {
+  collectWebsiteAuditInputs,
+  type WebsiteAuditResult,
+} from "../../lib/websiteAudit.js";
 
 export const intelligenceRouter = Router();
 
@@ -1394,6 +1398,220 @@ intelligenceRouter.post("/investigate/:leadId", requireAuth, readLimiter, async 
     }
 
     return res.json(deterministic);
+  } catch (err) {
+    next(err);
+  }
+});
+
+export const auditDeps = {
+  collectWebsiteAuditInputs,
+};
+
+/**
+ * GET /v1/intelligence/audit/:leadId
+ *
+ * Returns the cached website screenshot + bullet-point mini audit for a lead,
+ * or { audit: null } if no audit has been generated yet.
+ */
+intelligenceRouter.get("/audit/:leadId", requireAuth, readLimiter, async (req, res, next) => {
+  try {
+    const { workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId)) {
+      return res.status(400).json({ error: "Invalid leadId" });
+    }
+
+    const { data, error } = await (supabaseAdmin as any)
+      .from("lead_website_audits")
+      .select("website_url, screenshot_data_url, visual_summary, audit_bullets, ux_findings, mode, updated_at")
+      .eq("user_id", userId)
+      .eq("lead_id", leadId)
+      .maybeSingle();
+
+    if (error || !data) {
+      return res.json({ audit: null });
+    }
+
+    const audit: WebsiteAuditResult = {
+      websiteUrl: data.website_url ?? null,
+      screenshotDataUrl: data.screenshot_data_url ?? null,
+      screenshotAvailable: Boolean(data.screenshot_data_url),
+      visualSummary: typeof data.visual_summary === "string" ? data.visual_summary : "",
+      auditBullets: Array.isArray(data.audit_bullets) ? data.audit_bullets : [],
+      uxFindings: Array.isArray(data.ux_findings) ? data.ux_findings : [],
+      mode: asEnum(data.mode, ["ai_vision", "ai_text", "verified_data"] as const, "verified_data"),
+      checkedAt: data.updated_at || new Date().toISOString(),
+      cached: true,
+    };
+    return res.json({ audit });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /v1/intelligence/audit/:leadId
+ *
+ * Captures a homepage screenshot (when headless Chrome/Edge is available),
+ * inspects verified homepage UX/tech signals, and generates a 3-5 bullet
+ * Mini Audit + visual critique summary. Paid plans with AI (starter/pro/premium)
+ * refine the visual summary & bullets with AI (vision when screenshot exists,
+ * with automatic text-only fallback); free plans receive verified-data bullets.
+ */
+intelligenceRouter.post("/audit/:leadId", requireAuth, async (req, res, next) => {
+  const routeStart = Date.now();
+  try {
+    const { workspaceOwnerId: userId, plan } = await resolveUserPlanAndProfession(req.user!.id);
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId)) {
+      return res.status(400).json({ error: "Invalid leadId" });
+    }
+
+    const skipScreenshot = req.body?.skipScreenshot === true;
+
+    const { data: lead, error: leadErr } = await supabaseAdmin
+      .from("leads")
+      .select("id, business_name, website, instagram_handle, business_id")
+      .eq("id", leadId)
+      .eq("user_id", userId)
+      .single();
+
+    if (leadErr || !lead) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    let business: Record<string, any> | null = null;
+    if (lead.business_id) {
+      const { data: biz } = await supabaseAdmin
+        .from("businesses")
+        .select("website, ssl_valid, load_time_ms, website_is_weak, reviews_count, reviews_rating, instagram")
+        .eq("id", lead.business_id)
+        .maybeSingle();
+      business = biz ?? null;
+    }
+
+    const websiteUrl = (lead.website as string | null) || (business?.website as string | null) || null;
+    const collected = await auditDeps.collectWebsiteAuditInputs({
+      businessName: String(lead.business_name ?? "Business"),
+      websiteUrl,
+      sslValid: business?.ssl_valid ?? null,
+      loadTimeMs: business?.load_time_ms ?? null,
+      websiteIsWeak: business?.website_is_weak ?? null,
+      reviewsCount: business?.reviews_count ?? null,
+      reviewsRating: business?.reviews_rating ?? null,
+      hasInstagram: Boolean(lead.instagram_handle || business?.instagram),
+      skipScreenshot,
+    });
+
+    let visualSummary = collected.deterministic.visualSummary;
+    let auditBullets = collected.deterministic.auditBullets;
+    let mode: WebsiteAuditResult["mode"] = "verified_data";
+
+    if (aiEnabled() && canUseAiFeature(plan, "outreachDraft")) {
+      if (!checkAiGenerationRateLimit(req, res)) {
+        return;
+      }
+
+      const systemPrompt =
+        "You are MAST's Website & Conversion Reviewer. Given a business's verified homepage telemetry " +
+        "(and optionally a homepage screenshot), write a concise plain-English visual critique and 3 to 5 " +
+        "punchy bullet points a freelancer or agency can share directly with the business owner.\n" +
+        "Rules:\n" +
+        "- ONLY state issues you can directly verify from the screenshot or supplied telemetry. Never invent broken links, traffic numbers, or fake metrics.\n" +
+        "- Keep each bullet under 22 words, practical, and respectful (no harsh insults, no agency jargon).\n" +
+        "- Make visualSummary 1-2 short sentences describing what stands out visually or structurally so AI outreach can mention it naturally.\n" +
+        "- Never use em dashes ('—' or '–').\n" +
+        'Respond with ONLY a raw JSON object: {"visualSummary": string, "auditBullets": string[]}.';
+
+      const userPayload = JSON.stringify({
+        businessName: lead.business_name,
+        websiteUrl,
+        snapshot: collected.snapshot,
+        verifiedFindings: collected.deterministic.uxFindings,
+        fallbackBullets: collected.deterministic.auditBullets,
+      });
+
+      const applyAiAudit = (raw: { visualSummary?: unknown; auditBullets?: unknown }, usedVision: boolean) => {
+        const cleanSummary = asString(raw?.visualSummary, "").replace(/[—–]/g, " - ").trim();
+        const cleanBullets = asStringArray(raw?.auditBullets)
+          .map((b) => b.replace(/[—–]/g, " - ").trim())
+          .filter(Boolean)
+          .slice(0, 5);
+        if (cleanSummary) visualSummary = cleanSummary;
+        if (cleanBullets.length >= 2) auditBullets = cleanBullets;
+        mode = usedVision ? "ai_vision" : "ai_text";
+      };
+
+      if (collected.screenshotDataUrl) {
+        try {
+          const visionResult = await generateJSON<{ visualSummary: string; auditBullets: string[] }>({
+            system: systemPrompt,
+            user: userPayload,
+            imageDataUrl: collected.screenshotDataUrl,
+            feature: "website_audit",
+            contextPrepMs: Date.now() - routeStart,
+            maxTokens: 600,
+            timeoutMs: 22_000,
+            tier: "fast",
+          });
+          applyAiAudit(visionResult, true);
+        } catch (visionErr) {
+          console.warn("[intelligence] website audit vision failed, retrying text-only:", visionErr);
+        }
+      }
+
+      if (mode === "verified_data") {
+        try {
+          const textResult = await generateJSON<{ visualSummary: string; auditBullets: string[] }>({
+            system: systemPrompt,
+            user: userPayload,
+            feature: "website_audit",
+            contextPrepMs: Date.now() - routeStart,
+            maxTokens: 550,
+            timeoutMs: 18_000,
+            tier: "fast",
+          });
+          applyAiAudit(textResult, false);
+        } catch (textErr) {
+          console.warn("[intelligence] website audit text AI failed, returning verified_data:", textErr);
+        }
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    try {
+      await (supabaseAdmin as any).from("lead_website_audits").upsert(
+        {
+          user_id: userId,
+          lead_id: leadId,
+          website_url: websiteUrl,
+          screenshot_data_url: collected.screenshotDataUrl,
+          visual_summary: visualSummary,
+          audit_bullets: auditBullets,
+          ux_findings: collected.deterministic.uxFindings,
+          mode,
+          checked_at: nowIso,
+          updated_at: nowIso,
+        },
+        { onConflict: "lead_id" },
+      );
+    } catch (persistErr) {
+      console.warn("[intelligence] website audit cache save skipped:", persistErr);
+    }
+
+    const result: WebsiteAuditResult = {
+      websiteUrl,
+      screenshotDataUrl: collected.screenshotDataUrl,
+      screenshotAvailable: Boolean(collected.screenshotDataUrl),
+      visualSummary,
+      auditBullets,
+      uxFindings: collected.deterministic.uxFindings,
+      mode,
+      checkedAt: nowIso,
+      cached: false,
+    };
+
+    return res.json({ audit: result });
   } catch (err) {
     next(err);
   }

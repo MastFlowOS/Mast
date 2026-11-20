@@ -19,7 +19,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import type { Lead, OutreachTone } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
-import { useGenerateOutreachDraft, useMe, useOutreachStatus, useRecordLeadActivity, useSettings } from "@/hooks/use-mast-api";
+import {
+  useGenerateOutreachDraft,
+  useMe,
+  useOutreachPlaybooks,
+  useOutreachStatus,
+  useRecordLeadActivity,
+  useSettings,
+} from "@/hooks/use-mast-api";
 import { normalizeDraftResponse, TEMPLATES, leadNicheDisplay } from "@/lib/lead-workspace";
 import { useFreeOutreach } from "@/hooks/use-free-outreach";
 import { isFreeTemplateKey } from "@/lib/outreach/templates";
@@ -84,6 +91,7 @@ export function WriteTab({
   const freeOutreach = useFreeOutreach(lead);
 
   const [lengthPreference, setLengthPreference] = useState<LengthPreference>("standard");
+  const [selectedPlaybookId, setSelectedPlaybookId] = useState<string>("auto");
   const [isGeneratingFree, setIsGeneratingFree] = useState(false);
   const [isGeneratingManual, setIsGeneratingManual] = useState(false);
   const [copiedDraft, setCopiedDraft] = useState(false);
@@ -106,6 +114,10 @@ export function WriteTab({
     plan: auth?.user?.plan,
     aiConfigured: outreachStatus?.aiConfigured,
   });
+
+  const playbooksQuery = useOutreachPlaybooks(generationMode === "ai");
+  const playbooks = playbooksQuery?.data?.playbooks ?? [];
+  const defaultPlaybook = playbooks.find((p) => p.isDefault) ?? null;
 
   const channelLabel =
     channel === "email"
@@ -152,6 +164,7 @@ export function WriteTab({
             senderName,
             personalization,
             contextNotes: customContextNotes.trim() || undefined,
+            playbookId: selectedPlaybookId === "auto" ? undefined : selectedPlaybookId,
           },
         });
 
@@ -281,6 +294,38 @@ export function WriteTab({
           </span>
         </div>
       </div>
+
+      {/* Custom Voice / Playbook Picker (AI mode) */}
+      {generationMode === "ai" && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[11px]">
+            <label htmlFor="ai-playbook-select" className="font-semibold text-foreground">
+              Voice / Playbook
+            </label>
+            <span className="text-[10px] text-muted-foreground">
+              {playbooks.length > 0 ? `${playbooks.length} saved` : "Add in Settings"}
+            </span>
+          </div>
+          <select
+            id="ai-playbook-select"
+            aria-label="Voice / Playbook"
+            value={selectedPlaybookId}
+            onChange={(e) => setSelectedPlaybookId(e.target.value)}
+            className="w-full h-8 px-2.5 rounded-lg bg-card/50 border border-border/60 text-xs text-foreground outline-none focus:border-indigo-500"
+          >
+            <option value="auto">
+              {defaultPlaybook ? `Auto (${defaultPlaybook.name} — Default)` : "Auto (MAST Default Voice)"}
+            </option>
+            {playbooks.map((pb) => (
+              <option key={pb.id} value={pb.id}>
+                {pb.name}
+                {pb.isDefault ? " (Default)" : ""}
+              </option>
+            ))}
+            <option value="none">MAST Built-in Voice (Ignore Custom Default)</option>
+          </select>
+        </div>
+      )}
 
       {/* Tone Controls */}
       <div className="space-y-1.5">

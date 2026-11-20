@@ -17,6 +17,11 @@ import {
   Activity,
   Sparkles,
   Loader2,
+  Camera,
+  Copy,
+  Check,
+  ArrowUpRight,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +32,8 @@ import {
   useLeadTrust,
   useSettings,
   useInvestigateLead,
+  useLeadWebsiteAudit,
+  useRunLeadWebsiteAudit,
 } from "@/hooks/use-mast-api";
 import { leadNicheDisplay } from "@/lib/lead-workspace";
 import { openExternalPopup } from "@/lib/externalPopup";
@@ -35,19 +42,66 @@ interface ResearchTabProps {
   lead: Lead;
   researchQuestion: string;
   setResearchQuestion: React.Dispatch<React.SetStateAction<string>>;
+  onInsert?: (body: string, subject?: string) => void;
 }
 
-export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: ResearchTabProps) {
+export function ResearchTab({ lead, researchQuestion, setResearchQuestion, onInsert }: ResearchTabProps) {
   const { data: explanation, isLoading: explanationLoading } = useOpportunityExplanation(lead.id);
   const { data: trust, isLoading: trustLoading } = useLeadTrust(lead.id);
   const { data: settings } = useSettings();
   const investigate = useInvestigateLead();
+  const auditQuery = useLeadWebsiteAudit(lead.id);
+  const runAudit = useRunLeadWebsiteAudit(lead.id);
 
   const [investigationResult, setInvestigationResult] = useState<InvestigateLeadResult | null>(null);
+  const [copiedAudit, setCopiedAudit] = useState(false);
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+
+  const websiteAudit = auditQuery?.data?.audit ?? null;
 
   useEffect(() => {
     setInvestigationResult(null);
+    setCopiedAudit(false);
+    setPreviewExpanded(false);
   }, [lead.id]);
+
+  const handleRunWebsiteAudit = async () => {
+    if (runAudit.isPending) return;
+    try {
+      await runAudit.mutateAsync({});
+      toast.success("Website preview & mini audit ready");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not run website audit");
+    }
+  };
+
+  const formatAuditBulletsText = () => {
+    if (!websiteAudit || websiteAudit.auditBullets.length === 0) return "";
+    return [
+      `Quick website notes for ${lead.businessName}:`,
+      ...websiteAudit.auditBullets.map((b) => `• ${b}`),
+    ].join("\n");
+  };
+
+  const handleCopyAuditBullets = async () => {
+    const text = formatAuditBulletsText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedAudit(true);
+      toast.success("Mini audit bullets copied");
+      setTimeout(() => setCopiedAudit(false), 2000);
+    } catch {
+      toast.error("Could not copy bullets");
+    }
+  };
+
+  const handleInsertAuditBullets = () => {
+    const text = formatAuditBulletsText();
+    if (!text || !onInsert) return;
+    onInsert(text);
+    toast.success("Mini audit inserted into composer");
+  };
 
   const nicheLabel = leadNicheDisplay(lead.niche);
   const score = lead.opportunityScore ?? explanation?.score ?? null;
@@ -203,6 +257,135 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
           )}
         </div>
       )}
+
+      {/* 0. Website Screenshot Preview & 1-Click Bullet Mini Audit */}
+      <div
+        data-testid="website-mini-audit-card"
+        className="p-3 rounded-xl border border-violet-500/25 bg-violet-500/[0.04] space-y-2.5"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Camera className="size-3.5 text-violet-400 shrink-0" />
+            <span className="text-xs font-semibold text-foreground truncate">
+              Website Preview &amp; Mini Audit
+            </span>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleRunWebsiteAudit}
+            disabled={runAudit.isPending}
+            className="h-7 px-2 text-[11px] border-violet-500/35 bg-violet-500/10 hover:bg-violet-500/20 text-violet-200 gap-1 shrink-0"
+          >
+            {runAudit.isPending ? (
+              <>
+                <Loader2 className="size-3 animate-spin" />
+                Auditing...
+              </>
+            ) : websiteAudit ? (
+              <>
+                <RefreshCw className="size-3" />
+                Refresh
+              </>
+            ) : (
+              <>
+                <Sparkles className="size-3" />
+                Run Mini Audit
+              </>
+            )}
+          </Button>
+        </div>
+
+        {!websiteAudit && !runAudit.isPending && (
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            Capture a live homepage screenshot and generate 3–5 bullet points you can paste into outreach. The AI Writer also uses this visual critique automatically.
+          </p>
+        )}
+
+        {websiteAudit && (
+          <div className="space-y-2.5">
+            {websiteAudit.screenshotDataUrl && (
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setPreviewExpanded((prev) => !prev)}
+                  className="block w-full overflow-hidden rounded-lg border border-border/70 bg-black/40 hover:border-violet-400/60 transition-colors cursor-pointer text-left"
+                  title={previewExpanded ? "Collapse preview" : "Expand preview"}
+                >
+                  <img
+                    src={websiteAudit.screenshotDataUrl}
+                    alt={`${lead.businessName} homepage screenshot`}
+                    className={`w-full object-cover object-top transition-all ${
+                      previewExpanded ? "max-h-96" : "max-h-36"
+                    }`}
+                  />
+                </button>
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>Click image to {previewExpanded ? "collapse" : "expand"}</span>
+                  <span className="text-violet-300 font-medium">Synced to AI Writer</span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 text-[10px]">
+              <span className="px-1.5 py-0.5 rounded bg-violet-500/15 border border-violet-500/25 text-violet-300 font-medium">
+                {websiteAudit.mode === "ai_vision"
+                  ? "AI Visual Critique"
+                  : websiteAudit.mode === "ai_text"
+                    ? "AI Mini Audit"
+                    : "Verified Signals"}
+              </span>
+              {!websiteAudit.screenshotAvailable && (
+                <span className="text-muted-foreground">Synced to AI Writer</span>
+              )}
+            </div>
+
+            {websiteAudit.visualSummary && (
+              <p className="text-[11px] text-foreground/90 leading-relaxed">
+                {websiteAudit.visualSummary}
+              </p>
+            )}
+
+            {websiteAudit.auditBullets.length > 0 && (
+              <ul className="space-y-1.5 text-[11px] text-foreground/90">
+                {websiteAudit.auditBullets.map((bullet, idx) => (
+                  <li key={idx} className="flex items-start gap-1.5">
+                    <span className="text-violet-400 font-bold leading-snug">•</span>
+                    <span className="leading-snug">{bullet}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {websiteAudit.auditBullets.length > 0 && (
+              <div className="flex items-center gap-1.5 pt-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCopyAuditBullets}
+                  className="h-7 px-2.5 text-[11px] border-border/70 bg-card/60 hover:bg-card gap-1 flex-1"
+                >
+                  {copiedAudit ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+                  {copiedAudit ? "Copied" : "Copy Bullets"}
+                </Button>
+                {onInsert && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleInsertAuditBullets}
+                    className="h-7 px-2.5 text-[11px] bg-violet-600 hover:bg-violet-500 text-white gap-1 flex-1"
+                  >
+                    <ArrowUpRight className="size-3" />
+                    Insert in Composer
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* 1. Business Overview Card */}
       <div className="p-3 rounded-xl border border-border/60 bg-card/40 space-y-2.5">

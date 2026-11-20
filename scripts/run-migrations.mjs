@@ -49,6 +49,10 @@ export const MAST_CATALOG_TABLES = [
   "user_inbox_connections",
   "workspace_members",
   "workspace_invites",
+  "outreach_playbooks",
+  "lead_website_audits",
+  "workspace_booking_settings",
+  "workspace_suppressions",
   "discovery_streets_contamination_archive_2026_09",
   "user_discovery_street_state_contamination_archive_2026_09"
 ];

@@ -15,6 +15,12 @@ import type { Lead } from "@/lib/api";
 const h = vi.hoisted(() => ({
   sendEmailMutate: vi.fn(),
   recordActivityMutate: vi.fn(),
+  addSuppressionMutate: vi.fn(),
+  leadSafety: { blocked: false, match: null, unsubscribeToken: null } as any,
+  pacing: {
+    email: { sentLast24h: 2, softLimit: 35, hardLimit: 50, level: "ok", message: null },
+    instagram: { last1h: 0, last24h: 1, hourlyLimit: 15, dailyLimit: 40, level: "ok", message: null },
+  } as any,
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
@@ -56,6 +62,9 @@ vi.mock("@/hooks/use-mast-api", () => ({
   useSendLeadEmail: () => ({ mutateAsync: h.sendEmailMutate, isPending: false }),
   useRecordLeadActivity: () => ({ mutateAsync: h.recordActivityMutate, isPending: false }),
   useLeadActivities: () => ({ data: [], isLoading: false, isError: false }),
+  useLeadSafetyCheck: () => ({ data: h.leadSafety, isLoading: false }),
+  useOutreachPacing: () => ({ data: h.pacing, isLoading: false }),
+  useAddSuppression: () => ({ mutateAsync: h.addSuppressionMutate, isPending: false }),
 }));
 
 const mockLead: Lead = {
@@ -77,6 +86,11 @@ describe("Middle Message Composer — CenterWorkspace & RichTextEditor", () => {
     vi.clearAllMocks();
     h.clipboardText = "";
     h.windowOpenedUrl = "";
+    h.leadSafety = { blocked: false, match: null, unsubscribeToken: null };
+    h.pacing = {
+      email: { sentLast24h: 2, softLimit: 35, hardLimit: 50, level: "ok", message: null },
+      instagram: { last1h: 0, last24h: 1, hourlyLimit: 15, dailyLimit: 40, level: "ok", message: null },
+    };
 
     // Polyfill document.execCommand & queryCommandState in jsdom environment
     if (!document.execCommand) {
@@ -715,6 +729,71 @@ describe("Middle Message Composer — CenterWorkspace & RichTextEditor", () => {
       expect(plain).toContain("• Feature A");
       expect(plain).toContain("See MAST (https://mast.os)");
       expect(plain).not.toContain("<");
+    });
+
+    it("11: Blocks sending and displays Do-Not-Contact banner when lead is suppressed", () => {
+      h.leadSafety = {
+        blocked: true,
+        match: { kind: "email", value: "hello@brighthorizon.com", reason: "Unsubscribed" },
+        unsubscribeToken: null,
+      };
+
+      render(
+        <CenterWorkspace
+          lead={mockLead}
+          channel="email"
+          setChannel={() => {}}
+          subject="Hi"
+          setSubject={() => {}}
+          body="<p>Hello</p>"
+          setBody={() => {}}
+          template="initial"
+          setTemplate={() => {}}
+          tone="friendly"
+          setTone={() => {}}
+          onGenerate={async () => {}}
+          isGenerating={false}
+          onRewrite={async () => {}}
+        />
+      );
+
+      expect(screen.getByTestId("dnc-blocked-banner")).toBeDefined();
+      const sendBtn = screen.getByRole("button", { name: /^send email$/i });
+      expect((sendBtn as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("12: Displays pacing warning banner when daily email volume approaches spam threshold", () => {
+      h.pacing = {
+        email: {
+          sentLast24h: 52,
+          softLimit: 35,
+          hardLimit: 50,
+          level: "danger",
+          message: "High email volume: 52 sent in the last 24h.",
+        },
+        instagram: { last1h: 0, last24h: 0, hourlyLimit: 15, dailyLimit: 40, level: "ok", message: null },
+      };
+
+      render(
+        <CenterWorkspace
+          lead={mockLead}
+          channel="email"
+          setChannel={() => {}}
+          subject="Hi"
+          setSubject={() => {}}
+          body="<p>Hello</p>"
+          setBody={() => {}}
+          template="initial"
+          setTemplate={() => {}}
+          tone="friendly"
+          setTone={() => {}}
+          onGenerate={async () => {}}
+          isGenerating={false}
+          onRewrite={async () => {}}
+        />
+      );
+
+      expect(screen.getByTestId("outreach-pacing-warning").textContent).toContain("High email volume");
     });
   });
 });

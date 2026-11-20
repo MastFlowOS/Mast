@@ -26,6 +26,8 @@
     "src/server/routes/outreach.ts",
     "src/server/routes/inbox.ts",
     "src/server/routes/team.ts",
+    "src/server/routes/booking.ts",
+    "src/server/routes/safety.ts",
     "src/server/routes/observability.ts",
     "src/lib/queue.ts",
     "src/lib/supabaseAdmin.ts",
@@ -45,6 +47,8 @@
     "src/lib/leadInvestigate.ts",
     "src/lib/teamSeats.ts",
     "src/lib/workspaceContext.ts",
+    "src/lib/websiteAudit.ts",
+    "src/lib/deliverability.ts",
     "src/jobs/**/*.ts",
     "src/scraperBridge/**/*.ts",
     "src/scoring/**/*.ts"

@@ -354,6 +354,37 @@ export async function recordVerifiedClientReply(params: {
   return { recorded: true, duplicate: false };
 }
 
+const EXPLICIT_OPTOUT_RE =
+  /\b(unsubscribe|opt[\s-]?out|remove me|stop emailing|do not contact|take me off|no more emails)\b/i;
+
+async function autoSuppressEmail(
+  db: ReplyDbClient,
+  userId: string,
+  email: string | null | undefined,
+  source: "bounce" | "reply_optout",
+  reason: string,
+): Promise<void> {
+  const normalized = (email || "").trim().toLowerCase();
+  if (!normalized || !normalized.includes("@")) return;
+  try {
+    const table = db.from("workspace_suppressions");
+    if (typeof table?.upsert === "function") {
+      await table.upsert(
+        {
+          owner_id: userId,
+          kind: "email",
+          value: normalized,
+          reason,
+          source,
+        },
+        { onConflict: "owner_id,kind,value" },
+      );
+    }
+  } catch {
+    // Non-fatal if migration 056 hasn't been applied or table isn't mocked
+  }
+}
+
 export async function ingestEmailReply(
   db: ReplyDbClient,
   input: EmailReplyInput,
@@ -476,6 +507,15 @@ export async function ingestEmailReply(
   });
 
   if (!triage.isHumanReply) {
+    if (triage.intent === "bounce") {
+      await autoSuppressEmail(
+        db,
+        input.userId,
+        lead.email || fromEmail,
+        "bounce",
+        "Auto-blocked after email bounced",
+      );
+    }
     return {
       matched: true,
       recorded: false,
@@ -487,6 +527,16 @@ export async function ingestEmailReply(
       intent: triage.intent,
       reason: `filtered_${triage.intent}`,
     };
+  }
+
+  if (triage.intent === "not_interested" && EXPLICIT_OPTOUT_RE.test(cleanBody)) {
+    await autoSuppressEmail(
+      db,
+      input.userId,
+      fromEmail || lead.email,
+      "reply_optout",
+      "Auto-blocked after opt-out reply",
+    );
   }
 
   const dedupeKey = buildReplyDedupeKey({

@@ -9,6 +9,9 @@ const h = vi.hoisted(() => ({
   generateDraftMutate: vi.fn(),
   recordActivityMutate: vi.fn(),
   investigateMutate: vi.fn(),
+  runAuditMutate: vi.fn(),
+  cachedAudit: null as any,
+  playbooks: [] as any[],
   freeGenerateMock: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
@@ -57,6 +60,18 @@ vi.mock("@/hooks/use-mast-api", () => ({
   }),
   useInvestigateLead: () => ({
     mutateAsync: h.investigateMutate,
+    isPending: false,
+  }),
+  useOutreachPlaybooks: () => ({
+    data: { playbooks: h.playbooks },
+    isLoading: false,
+  }),
+  useLeadWebsiteAudit: () => ({
+    data: { audit: h.cachedAudit },
+    isLoading: false,
+  }),
+  useRunLeadWebsiteAudit: () => ({
+    mutateAsync: h.runAuditMutate,
     isPending: false,
   }),
   useOpportunityExplanation: (leadId: number) => ({
@@ -138,6 +153,24 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
     h.clipboardText = "";
     h.userPlan = "free";
     h.aiConfigured = true;
+    h.cachedAudit = null;
+    h.playbooks = [];
+    h.runAuditMutate.mockResolvedValue({
+      audit: {
+        websiteUrl: "https://brighthorizon.com",
+        screenshotDataUrl: "data:image/jpeg;base64,ZmFrZQ==",
+        screenshotAvailable: true,
+        visualSummary: "Hero section feels crowded with no clear above-the-fold booking button.",
+        auditBullets: [
+          "Missing online booking widget on homepage",
+          "Hero text overlaps banner image on narrower screens",
+          "No Google Analytics tag found",
+        ],
+        uxFindings: ["No online booking widget detected on homepage."],
+        mode: "ai_vision",
+        checkedAt: "2026-04-12T10:00:00Z",
+      },
+    });
     h.freeGenerateMock.mockResolvedValue({
       ok: true,
       subject: "Quick question regarding Bright Horizon Cafe",
@@ -1116,6 +1149,105 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
       fireEvent.click(screen.getByRole("button", { name: /^copy/i }));
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
         expect.stringContaining("AI generated message for Bright Horizon Cafe")
+      );
+    });
+
+    it("allows choosing a custom AI playbook voice and passes playbookId to generateDraft", async () => {
+      h.userPlan = "pro";
+      h.aiConfigured = true;
+      h.playbooks = [
+        {
+          id: "pb-casual",
+          name: "Casual Founder Voice",
+          description: "Short peer-to-peer opener",
+          promptInstructions: "Sound like a friendly founder texting a peer.",
+          exampleMessages: null,
+          isDefault: true,
+          createdAt: "2026-04-10T00:00:00Z",
+          updatedAt: "2026-04-10T00:00:00Z",
+        },
+        {
+          id: "pb-direct",
+          name: "Direct Redesign Pitch",
+          description: null,
+          promptInstructions: "Point out one website gap and offer a quick mockup.",
+          exampleMessages: null,
+          isDefault: false,
+          createdAt: "2026-04-10T00:00:00Z",
+          updatedAt: "2026-04-10T00:00:00Z",
+        },
+      ];
+
+      render(
+        <AIAssistant
+          lead={mockLead}
+          channel="email"
+          subject=""
+          body=""
+          onInsert={vi.fn()}
+          template="initial"
+          setTemplate={vi.fn()}
+          tone="friendly"
+          setTone={vi.fn()}
+        />
+      );
+
+      const playbookSelect = screen.getByLabelText(/voice \/ playbook/i);
+      fireEvent.change(playbookSelect, { target: { value: "pb-direct" } });
+      fireEvent.click(screen.getByRole("button", { name: /generate draft/i }));
+
+      await waitFor(() => {
+        expect(h.generateDraftMutate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            leadId: mockLead.id,
+            body: expect.objectContaining({
+              playbookId: "pb-direct",
+            }),
+          })
+        );
+      });
+    });
+
+    it("renders Website Preview & Mini Audit bullets in Research tab and inserts them into composer", async () => {
+      h.cachedAudit = {
+        websiteUrl: "https://brighthorizon.com",
+        screenshotDataUrl: "data:image/jpeg;base64,ZmFrZQ==",
+        screenshotAvailable: true,
+        visualSummary: "Hero section feels crowded with no clear above-the-fold booking button.",
+        auditBullets: [
+          "Missing online booking widget on homepage",
+          "Hero text overlaps banner image on narrower screens",
+          "No Google Analytics tag found",
+        ],
+        uxFindings: ["No online booking widget detected on homepage."],
+        mode: "ai_vision",
+        checkedAt: "2026-04-12T10:00:00Z",
+      };
+      const onInsertMock = vi.fn();
+
+      render(
+        <AIAssistant
+          lead={mockLead}
+          channel="email"
+          subject=""
+          body=""
+          onInsert={onInsertMock}
+          template="initial"
+          setTemplate={vi.fn()}
+          tone="friendly"
+          setTone={vi.fn()}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("tab", { name: /research/i }));
+
+      expect(screen.getByTestId("website-mini-audit-card")).toBeInTheDocument();
+      expect(screen.getByText(/Missing online booking widget on homepage/i)).toBeInTheDocument();
+      expect(screen.getByAltText(/Bright Horizon Cafe homepage screenshot/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /insert in composer/i }));
+      expect(onInsertMock).toHaveBeenCalledWith(
+        expect.stringContaining("• Missing online booking widget on homepage")
       );
     });
   });

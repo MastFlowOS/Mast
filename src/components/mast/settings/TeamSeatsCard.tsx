@@ -22,7 +22,8 @@ import {
   useTeamWorkspace,
   useUpdateTeamMemberRole,
 } from "@/hooks/use-mast-api";
-import { ApiError } from "@/lib/api";
+import { ApiError, getPublicWebOrigin } from "@/lib/api";
+import { MastConfirm } from "@/components/mast/ui/MastConfirm";
 
 export function TeamSeatsCard() {
   const { data: auth } = useMe();
@@ -42,6 +43,9 @@ export function TeamSeatsCard() {
   const canManageTeam = team?.myRole === "owner" || team?.myRole === "admin";
   const isOwner = team?.myRole === "owner";
 
+  const buildInviteUrl = (token: string) =>
+    `${getPublicWebOrigin()}/invite?token=${encodeURIComponent(token)}`;
+
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = inviteEmail.trim();
@@ -49,7 +53,7 @@ export function TeamSeatsCard() {
     try {
       const res = await inviteMember.mutateAsync({ email: trimmed, role: inviteRole });
       setInviteEmail("");
-      const inviteUrl = `${window.location.origin}/invite?token=${encodeURIComponent(res.invite.token)}`;
+      const inviteUrl = buildInviteUrl(res.invite.token);
       try {
         await navigator.clipboard.writeText(inviteUrl);
         setCopiedToken(res.invite.token);
@@ -64,7 +68,7 @@ export function TeamSeatsCard() {
   };
 
   const handleCopyLink = async (token: string) => {
-    const inviteUrl = `${window.location.origin}/invite?token=${encodeURIComponent(token)}`;
+    const inviteUrl = buildInviteUrl(token);
     try {
       await navigator.clipboard.writeText(inviteUrl);
       setCopiedToken(token);
@@ -200,15 +204,24 @@ export function TeamSeatsCard() {
               <span className="uppercase font-medium text-foreground">{team.owner.plan}</span>
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => handleRemoveOrLeave(auth.user!.id, true)}
+          <MastConfirm
+            trigger={
+              <button
+                type="button"
+                disabled={removeMember.isPending}
+                className="px-3 py-1.5 rounded-xl border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-semibold transition-colors inline-flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+              >
+                <LogOut className="size-3.5" />
+                Leave Workspace
+              </button>
+            }
+            title="Leave this workspace?"
+            description="You will lose access to shared agency leads, pipeline stages, follow-ups, and team credits until re-invited."
+            confirmLabel="Leave workspace"
+            destructive
             disabled={removeMember.isPending}
-            className="px-3 py-1.5 rounded-xl border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-semibold transition-colors inline-flex items-center gap-1.5 self-start sm:self-auto"
-          >
-            <LogOut className="size-3.5" />
-            Leave Workspace
-          </button>
+            onConfirm={() => handleRemoveOrLeave(auth.user!.id, true)}
+          />
         </div>
       )}
 
@@ -366,15 +379,25 @@ export function TeamSeatsCard() {
                   )}
 
                   {(isOwner || (canManageTeam && m.role === "member")) && m.userId !== auth?.user?.id && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveOrLeave(m.userId, false)}
+                    <MastConfirm
+                      trigger={
+                        <button
+                          type="button"
+                          disabled={removeMember.isPending}
+                          title="Remove teammate"
+                          aria-label={`Remove ${m.fullName || m.email || "teammate"}`}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      }
+                      title={`Remove ${m.fullName || m.email || "teammate"}?`}
+                      description="They will immediately lose access to your shared agency leads, pipeline, follow-ups, and plan credits."
+                      confirmLabel="Remove teammate"
+                      destructive
                       disabled={removeMember.isPending}
-                      title="Remove teammate"
-                      className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
+                      onConfirm={() => handleRemoveOrLeave(m.userId, false)}
+                    />
                   )}
                 </div>
               </div>

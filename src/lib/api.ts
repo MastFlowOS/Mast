@@ -47,7 +47,14 @@ function getApiBaseUrl(): string | undefined {
   return raw ? raw.trim().replace(/\/+$/, "") : undefined;
 }
 
-async function backendFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+export function getPublicBackendBaseUrl(): string {
+  return getApiBaseUrl() ?? "";
+}
+
+async function backendFetch<T>(
+  path: string,
+  options: RequestInit & { timeoutMs?: number } = {},
+): Promise<T> {
   const baseUrl = getApiBaseUrl();
   if (!baseUrl) {
     throw new ApiError(0, "VITE_API_BASE_URL is not configured", {});
@@ -59,18 +66,19 @@ async function backendFetch<T>(path: string, options: RequestInit = {}): Promise
   } = await supabase.auth.getSession();
   if (!session) throw new ApiError(401, "Not authenticated", {});
 
-  // 12-second safety timeout so unresponsive/paused backends fail gracefully
+  // Safety timeout so unresponsive/paused backends fail gracefully
+  const { timeoutMs = 12000, ...fetchOptions } = options;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      signal: options.signal || controller.signal,
+      ...fetchOptions,
+      signal: fetchOptions.signal || controller.signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${session.access_token}`,
-        ...(options.headers ?? {}),
+        ...(fetchOptions.headers ?? {}),
       },
     });
 
@@ -226,6 +234,8 @@ export type Lead = {
   professionSlug?: string | null;
   /** Optional user-entered deal value. null/undefined = not provided (never estimated). */
   estimatedValue?: number | null;
+  /** Optional assigned teammate user UUID inside an agency workspace. */
+  assignedTo?: string | null;
 };
 
 export type CreateLeadBody = Partial<
@@ -370,6 +380,7 @@ export type OutreachDraftRequest = {
   personalization?: PersonalizationSettings;
   contextNotes?: string;
   tier?: "fast" | "pro";
+  playbookId?: string | null;
 };
 
 export type OutreachDraftResponse = {
@@ -546,6 +557,7 @@ function dbRowToLead(row: Record<string, unknown>): Lead {
     opportunityScore: (row.opportunity_score as number | null) ?? null,
     professionSlug: (row.profession_slug as string | null) ?? null,
     estimatedValue: row.estimated_value == null ? null : Number(row.estimated_value),
+    assignedTo: (row.assigned_to as string | null) ?? null,
   };
 }
 
@@ -572,6 +584,7 @@ function leadToDbRow(body: Partial<Lead & CreateLeadBody>) {
   if (body.lastContactedAt !== undefined) row.last_contacted_at = body.lastContactedAt;
   if (body.followUpAt !== undefined) row.follow_up_at = body.followUpAt;
   if (body.estimatedValue !== undefined) row.estimated_value = body.estimatedValue;
+  if (body.assignedTo !== undefined) row.assigned_to = body.assignedTo;
   return row;
 }
 
@@ -2809,10 +2822,38 @@ export async function generateOutreachDraft(leadId: number, body: OutreachDraftR
 }
 
 export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Promise<SendLeadEmailResponse> {
-  const userId = await requireUserId();
+  await requireUserId();
   const lead = await getLead(leadId);
   if (!lead.email) {
     throw new Error("Lead does not have an email address.");
+  }
+
+  let outgoingBody = body.body;
+
+  // Enforce workspace Do-Not-Contact list & optional 1-click opt-out footer
+  try {
+    const safety = await checkLeadSafety(leadId);
+    if (safety.blocked) {
+      const target = safety.match ? `${safety.match.kind} (${safety.match.value})` : "this contact";
+      throw new Error(`Blocked by your Do-Not-Contact list (${target}). Remove it in Settings to email this lead.`);
+    }
+
+    const userSettings = await getSettings().catch(() => ({} as SettingsMap));
+    const backendBase = getPublicBackendBaseUrl();
+    if (
+      userSettings.includeUnsubscribeFooter === "true" &&
+      safety.unsubscribeToken &&
+      backendBase &&
+      !outgoingBody.includes("/v1/safety/unsubscribe")
+    ) {
+      const optOutUrl = `${backendBase}/v1/safety/unsubscribe?token=${encodeURIComponent(safety.unsubscribeToken)}`;
+      outgoingBody = `${outgoingBody.trimEnd()}\n\n---\nIf you'd rather not hear from me again, reply "stop" or opt out here: ${optOutUrl}`;
+    }
+  } catch (safetyErr) {
+    if (safetyErr instanceof Error && safetyErr.message.startsWith("Blocked by your Do-Not-Contact list")) {
+      throw safetyErr;
+    }
+    // Non-fatal if safety endpoint is temporarily unreachable
   }
 
   const { data: { session } } = await supabase!.auth.getSession();
@@ -2825,7 +2866,7 @@ export async function sendLeadEmail(leadId: number, body: SendEmailRequest): Pro
       "Content-Type": "application/json",
       "Authorization": `Bearer ${token}`
     },
-    body: JSON.stringify({ to: lead.email, subject: body.subject, body: body.body })
+    body: JSON.stringify({ to: lead.email, subject: body.subject, body: outgoingBody })
   });
 
   const resData = await response.json().catch(() => ({}));
@@ -2935,6 +2976,26 @@ export class SmtpApiError extends Error {
 const DEFAULT_DESKTOP_WEB_ORIGIN = "https://mast-flow.vercel.app";
 
 /**
+ * Returns the public shareable web origin (`https://mast-flow.vercel.app` when
+ * inside the Tauri desktop app instead of `http://tauri.localhost`).
+ */
+export function getPublicWebOrigin(): string {
+  const origin =
+    typeof window !== "undefined" && typeof window.location?.origin === "string"
+      ? window.location.origin
+      : "";
+  const isTauriOrigin = origin.includes("tauri.localhost") || origin.startsWith("tauri:");
+  if (!isDesktopApp() && !isTauriOrigin && origin) {
+    return origin.replace(/\/+$/, "");
+  }
+  const apiEnv = (typeof import.meta !== "undefined" && import.meta.env)
+    ? import.meta.env
+    : (process.env as Record<string, string | undefined>);
+  const raw = (apiEnv?.VITE_WEB_APP_URL || apiEnv?.VITE_APP_URL || DEFAULT_DESKTOP_WEB_ORIGIN) as string;
+  return raw.trim().replace(/\/+$/, "");
+}
+
+/**
  * Resolves Vercel `/api/*` serverless routes (`/api/smtp-settings`, `/api/test-smtp`,
  * `/api/send-email`). On web deployments they live on the same origin; inside the Tauri
  * desktop shell (`tauri.localhost` / `localhost:5173`), relative `/api/*` resolves to the
@@ -2946,12 +3007,7 @@ function resolveWebApiUrl(
   if (!isDesktopApp()) {
     return path;
   }
-  const apiEnv = (typeof import.meta !== "undefined" && import.meta.env)
-    ? import.meta.env
-    : (process.env as Record<string, string | undefined>);
-  const raw = (apiEnv?.VITE_WEB_APP_URL || apiEnv?.VITE_APP_URL || DEFAULT_DESKTOP_WEB_ORIGIN) as string;
-  const baseUrl = raw.trim().replace(/\/+$/, "");
-  return `${baseUrl}${path}`;
+  return `${getPublicWebOrigin()}${path}`;
 }
 
 async function smtpRequest(
@@ -3518,4 +3574,213 @@ export async function removeTeamMember(memberId: string): Promise<{ success: boo
   });
   invalidateProfileCache();
   return res;
+}
+
+// ─── Custom AI Outreach Playbooks / Skills ────────────────────────────────────
+
+export type OutreachPlaybook = {
+  id: string;
+  name: string;
+  description: string | null;
+  promptInstructions: string;
+  exampleMessages: string | null;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function listOutreachPlaybooks(): Promise<{ playbooks: OutreachPlaybook[] }> {
+  return backendFetch<{ playbooks: OutreachPlaybook[] }>("/v1/outreach/playbooks");
+}
+
+export async function createOutreachPlaybook(body: {
+  name: string;
+  description?: string | null;
+  promptInstructions: string;
+  exampleMessages?: string | null;
+  isDefault?: boolean;
+}): Promise<{ playbook: OutreachPlaybook }> {
+  return backendFetch<{ playbook: OutreachPlaybook }>("/v1/outreach/playbooks", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateOutreachPlaybook(
+  id: string,
+  body: Partial<{
+    name: string;
+    description: string | null;
+    promptInstructions: string;
+    exampleMessages: string | null;
+    isDefault: boolean;
+  }>,
+): Promise<{ playbook: OutreachPlaybook }> {
+  return backendFetch<{ playbook: OutreachPlaybook }>(`/v1/outreach/playbooks/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteOutreachPlaybook(id: string): Promise<{ success: boolean }> {
+  return backendFetch<{ success: boolean }>(`/v1/outreach/playbooks/${id}`, {
+    method: "DELETE",
+  });
+}
+
+// ─── Website Screenshot Preview & 1-Click Bullet Mini Audit ───────────────────
+
+export type WebsiteAuditResult = {
+  websiteUrl: string | null;
+  screenshotDataUrl: string | null;
+  screenshotAvailable: boolean;
+  visualSummary: string;
+  auditBullets: string[];
+  uxFindings: string[];
+  mode: "ai_vision" | "ai_text" | "verified_data";
+  checkedAt: string;
+  cached?: boolean;
+};
+
+export async function getLeadWebsiteAudit(leadId: number): Promise<{ audit: WebsiteAuditResult | null }> {
+  return backendFetch<{ audit: WebsiteAuditResult | null }>(`/v1/intelligence/audit/${leadId}`);
+}
+
+export async function runLeadWebsiteAudit(
+  leadId: number,
+  options?: { skipScreenshot?: boolean },
+): Promise<{ audit: WebsiteAuditResult }> {
+  return backendFetch<{ audit: WebsiteAuditResult }>(`/v1/intelligence/audit/${leadId}`, {
+    method: "POST",
+    timeoutMs: 35_000,
+    body: JSON.stringify(options ?? {}),
+  });
+}
+
+// ─── Booking Link Sync (Calendly / Cal.com) ───────────────────────────────────
+
+export type BookingProvider = "calcom" | "calendly" | "custom";
+
+export type BookingSettings = {
+  provider: BookingProvider;
+  bookingUrl: string;
+  webhookToken: string;
+  autoMoveStage: boolean;
+  lastEventAt: string | null;
+};
+
+export async function getBookingSettings(): Promise<BookingSettings> {
+  return backendFetch<BookingSettings>("/v1/booking/settings");
+}
+
+export async function saveBookingSettings(body: {
+  provider: BookingProvider;
+  bookingUrl: string;
+  autoMoveStage: boolean;
+}): Promise<BookingSettings> {
+  return backendFetch<BookingSettings>("/v1/booking/settings", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── Outreach Safety, Do-Not-Contact & Domain Deliverability ──────────────────
+
+export type SuppressionKind = "email" | "domain" | "instagram";
+export type SuppressionSource = "manual" | "bounce" | "unsubscribe" | "reply_optout";
+
+export type SuppressionItem = {
+  id: string;
+  kind: SuppressionKind;
+  value: string;
+  reason: string | null;
+  source: SuppressionSource;
+  created_at: string;
+};
+
+export type LeadSafetyCheck = {
+  blocked: boolean;
+  match: {
+    id?: string;
+    kind: SuppressionKind;
+    value: string;
+    reason?: string | null;
+    source?: SuppressionSource;
+  } | null;
+  unsubscribeToken: string | null;
+};
+
+export type PacingLevel = "ok" | "warning" | "danger";
+
+export type PacingAssessment = {
+  email: {
+    sentLast24h: number;
+    softLimit: number;
+    hardLimit: number;
+    level: PacingLevel;
+    message: string | null;
+  };
+  instagram: {
+    last1h: number;
+    last24h: number;
+    hourlyLimit: number;
+    dailyLimit: number;
+    level: PacingLevel;
+    message: string | null;
+  };
+};
+
+export type DomainCheckStatus = "pass" | "warn" | "fail";
+
+export type DomainDeliverabilityRecordCheck = {
+  status: DomainCheckStatus;
+  record: string | null;
+  detail: string;
+};
+
+export type DomainDeliverabilityReport = {
+  domain: string;
+  overall: "good" | "needs_attention" | "at_risk";
+  mx: DomainDeliverabilityRecordCheck;
+  spf: DomainDeliverabilityRecordCheck;
+  dmarc: DomainDeliverabilityRecordCheck;
+  dkim: DomainDeliverabilityRecordCheck;
+  checkedAt: string;
+};
+
+export async function listSuppressions(): Promise<{ suppressions: SuppressionItem[] }> {
+  return backendFetch<{ suppressions: SuppressionItem[] }>("/v1/safety/suppressions");
+}
+
+export async function addSuppression(body: {
+  kind: SuppressionKind;
+  value: string;
+  reason?: string | null;
+}): Promise<{ suppression: SuppressionItem }> {
+  return backendFetch<{ suppression: SuppressionItem }>("/v1/safety/suppressions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteSuppression(id: string): Promise<{ success: boolean }> {
+  return backendFetch<{ success: boolean }>(`/v1/safety/suppressions/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function checkLeadSafety(leadId: number): Promise<LeadSafetyCheck> {
+  return backendFetch<LeadSafetyCheck>(`/v1/safety/check-lead/${leadId}`);
+}
+
+export async function getOutreachPacing(): Promise<PacingAssessment> {
+  return backendFetch<PacingAssessment>("/v1/safety/pacing");
+}
+
+export async function checkDomainDeliverabilityApi(domainOrEmail: string): Promise<DomainDeliverabilityReport> {
+  return backendFetch<DomainDeliverabilityReport>("/v1/safety/domain-check", {
+    method: "POST",
+    timeoutMs: 20_000,
+    body: JSON.stringify({ domainOrEmail }),
+  });
 }

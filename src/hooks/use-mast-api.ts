@@ -94,6 +94,27 @@ import {
   acceptTeamInvite,
   updateTeamMemberRole,
   removeTeamMember,
+  type OutreachPlaybook,
+  listOutreachPlaybooks,
+  createOutreachPlaybook,
+  updateOutreachPlaybook,
+  deleteOutreachPlaybook,
+  type WebsiteAuditResult,
+  getLeadWebsiteAudit,
+  runLeadWebsiteAudit,
+  type BookingSettings,
+  getBookingSettings,
+  saveBookingSettings,
+  type SuppressionItem,
+  type LeadSafetyCheck,
+  type PacingAssessment,
+  type DomainDeliverabilityReport,
+  listSuppressions,
+  addSuppression,
+  deleteSuppression,
+  checkLeadSafety,
+  getOutreachPacing,
+  checkDomainDeliverabilityApi,
 } from "@/lib/api";
 import { appendActivityToNotes, buildActivitiesFromLead, normalizeActivitiesPayload, type WorkspaceActivityInput } from "@/lib/lead-workspace";
 
@@ -128,6 +149,12 @@ export const queryKeys = {
   opsStats: (rangeHours: number) => ["mast", "ops", "stats", rangeHours] as const,
   opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
   team: ["mast", "team"] as const,
+  outreachPlaybooks: ["mast", "outreach", "playbooks"] as const,
+  leadWebsiteAudit: (leadId: number | string | undefined) => ["mast", "intelligence", "audit", String(leadId)] as const,
+  bookingSettings: ["mast", "booking", "settings"] as const,
+  suppressions: ["mast", "safety", "suppressions"] as const,
+  leadSafety: (leadId: number | string | undefined) => ["mast", "safety", "lead", String(leadId)] as const,
+  outreachPacing: ["mast", "safety", "pacing"] as const,
 };
 
 const DEV_MOCK_USER: AuthUser = {
@@ -995,5 +1022,152 @@ export function useRemoveTeamMember() {
     onSuccess: () => {
       queryClient.invalidateQueries();
     },
+  });
+}
+
+// ─── Custom AI Outreach Playbooks / Skills ───────────────────────────────────
+
+export function useOutreachPlaybooks(enabled = true) {
+  return useQuery<{ playbooks: OutreachPlaybook[] }>({
+    queryKey: queryKeys.outreachPlaybooks,
+    queryFn: listOutreachPlaybooks,
+    enabled,
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+export function useCreateOutreachPlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createOutreachPlaybook,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.outreachPlaybooks });
+    },
+  });
+}
+
+export function useUpdateOutreachPlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & Parameters<typeof updateOutreachPlaybook>[1]) =>
+      updateOutreachPlaybook(id, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.outreachPlaybooks });
+    },
+  });
+}
+
+export function useDeleteOutreachPlaybook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteOutreachPlaybook,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.outreachPlaybooks });
+    },
+  });
+}
+
+// ─── Website Screenshot Preview & 1-Click Bullet Mini Audit ──────────────────
+
+export function useLeadWebsiteAudit(leadId: number | undefined, enabled = true) {
+  return useQuery<{ audit: WebsiteAuditResult | null }>({
+    queryKey: queryKeys.leadWebsiteAudit(leadId),
+    queryFn: () => getLeadWebsiteAudit(leadId!),
+    enabled: Boolean(leadId) && enabled,
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+}
+
+export function useRunLeadWebsiteAudit(leadId: number | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (options?: { skipScreenshot?: boolean }) => runLeadWebsiteAudit(leadId!, options),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.leadWebsiteAudit(leadId), data);
+    },
+  });
+}
+
+// ─── Booking Link Sync (Calendly / Cal.com) ──────────────────────────────────
+
+export function useBookingSettings(enabled = true) {
+  return useQuery<BookingSettings>({
+    queryKey: queryKeys.bookingSettings,
+    queryFn: getBookingSettings,
+    enabled,
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+export function useSaveBookingSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: saveBookingSettings,
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.bookingSettings, data);
+    },
+  });
+}
+
+// ─── Outreach Safety, Do-Not-Contact & Domain Deliverability ─────────────────
+
+export function useSuppressions(enabled = true) {
+  return useQuery<{ suppressions: SuppressionItem[] }>({
+    queryKey: queryKeys.suppressions,
+    queryFn: listSuppressions,
+    enabled,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export function useAddSuppression() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: addSuppression,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.suppressions });
+      queryClient.invalidateQueries({ queryKey: ["mast", "safety", "lead"] });
+    },
+  });
+}
+
+export function useDeleteSuppression() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSuppression,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.suppressions });
+      queryClient.invalidateQueries({ queryKey: ["mast", "safety", "lead"] });
+    },
+  });
+}
+
+export function useLeadSafetyCheck(leadId: number | undefined, enabled = true) {
+  return useQuery<LeadSafetyCheck>({
+    queryKey: queryKeys.leadSafety(leadId),
+    queryFn: () => checkLeadSafety(leadId!),
+    enabled: Boolean(leadId) && enabled,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export function useOutreachPacing(enabled = true) {
+  return useQuery<PacingAssessment>({
+    queryKey: queryKeys.outreachPacing,
+    queryFn: getOutreachPacing,
+    enabled,
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+export function useCheckDomainDeliverability() {
+  return useMutation<DomainDeliverabilityReport, Error, string>({
+    mutationFn: checkDomainDeliverabilityApi,
   });
 }

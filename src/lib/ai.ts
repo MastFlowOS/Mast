@@ -483,6 +483,7 @@ export async function generateJSON<T>(params: {
   contextPrepMs?: number;
   correlationId?: string;
   reasoningEffort?: "low" | "medium" | "high";
+  imageDataUrl?: string | null;
 }): Promise<T> {
   const ai = getClient();
   const feature = params.feature ?? "general";
@@ -552,11 +553,17 @@ export async function generateJSON<T>(params: {
 
     try {
       if (typeof ai.chat?.completions?.create === "function") {
+        const userMessageContent = params.imageDataUrl
+          ? [
+              { type: "text", text: params.user },
+              { type: "image_url", image_url: { url: params.imageDataUrl } },
+            ]
+          : params.user;
         const completionParams: Record<string, unknown> = {
           model,
           messages: [
             { role: "system", content: params.system },
-            { role: "user", content: params.user },
+            { role: "user", content: userMessageContent },
           ],
           max_tokens: effectiveMaxTokens,
           temperature: 0.3,

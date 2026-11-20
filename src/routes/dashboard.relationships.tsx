@@ -18,6 +18,8 @@ import {
   Search,
   Star,
   Trash2,
+  UserCheck,
+  Users,
   X,
 } from "lucide-react";
 import { ApiError, type CreateLeadBody, type Lead, type LeadStatus } from "@/lib/api";
@@ -26,6 +28,8 @@ import {
   useBulkUpdateLeads,
   useCreateLead,
   useLeads,
+  useMe,
+  useTeamWorkspace,
 } from "@/hooks/use-mast-api";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -80,7 +84,17 @@ export const Route = createFileRoute("/dashboard/relationships")({
 });
 
 const ALL_VALUE = "__all__";
+const MINE_VALUE = "__mine__";
+const UNASSIGNED_VALUE = "__unassigned__";
 const NONE_VALUE = "__none__";
+
+function shortTeammateName(fullName?: string | null, email?: string | null): string {
+  const name = (fullName ?? "").trim();
+  if (name) return name.split(/\s+/)[0] || name;
+  const em = (email ?? "").trim();
+  if (em) return em.split("@")[0] || em;
+  return "Teammate";
+}
 const PAGE_SIZE = 100;
 const STARRED_STORAGE_KEY = "mast_starred_relationships";
 
@@ -468,6 +482,7 @@ export function RelationshipRow({
   lead,
   selected,
   starred,
+  assigneeLabel,
   onOpen,
   onToggleSelect,
   onToggleStar,
@@ -479,6 +494,7 @@ export function RelationshipRow({
   lead: Lead;
   selected: boolean;
   starred: boolean;
+  assigneeLabel?: string | null;
   onOpen: () => void;
   onToggleSelect: () => void;
   onToggleStar: () => void;
@@ -556,6 +572,18 @@ export function RelationshipRow({
                 className="size-[3px] shrink-0 rounded-full bg-muted-foreground/50"
               />
               <span className="min-w-0 truncate">{lead.location}</span>
+            </>
+          )}
+          {assigneeLabel && (
+            <>
+              <span
+                aria-hidden="true"
+                className="size-[3px] shrink-0 rounded-full bg-muted-foreground/50"
+              />
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-blue-500/25 bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium text-blue-300">
+                <Users className="size-2.5" />
+                {assigneeLabel}
+              </span>
             </>
           )}
         </div>
@@ -710,6 +738,7 @@ function Relationships() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(ALL_VALUE);
   const [nicheFilters, setNicheFilters] = useState<string[]>([]);
+  const [assigneeFilter, setAssigneeFilter] = useState(ALL_VALUE);
   const [starredOnly, setStarredOnly] = useState(false);
   const [starred, setStarred] = useState<Set<number>>(() => loadStarred());
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -734,10 +763,42 @@ function Relationships() {
     limit: 5000,
   };
 
+  const { data: auth } = useMe();
+  const { data: team } = useTeamWorkspace(!!auth?.user);
   const { data: leadsPayload, isLoading } = useLeads(params);
   const createLead = useCreateLead();
   const bulkUpdate = useBulkUpdateLeads();
   const bulkDelete = useBulkDeleteLeads();
+
+  const myUserId = auth?.user?.id ?? null;
+  const teamRoster = useMemo(() => {
+    const entries: Array<{ userId: string; label: string; isMe: boolean }> = [];
+    const seen = new Set<string>();
+    const add = (userId: string | null | undefined, fullName?: string | null, email?: string | null) => {
+      if (!userId || seen.has(userId)) return;
+      seen.add(userId);
+      entries.push({
+        userId,
+        label: shortTeammateName(fullName, email),
+        isMe: userId === myUserId,
+      });
+    };
+    if (team) {
+      add(team.owner.userId, team.owner.fullName, team.owner.email);
+      for (const m of team.members) add(m.userId, m.fullName, m.email);
+    } else if (auth?.user) {
+      add(auth.user.id, auth.user.fullName, auth.user.email);
+    }
+    return entries;
+  }, [team, auth?.user, myUserId]);
+
+  const rosterLabelMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of teamRoster) {
+      map.set(member.userId, member.isMe ? "You" : member.label);
+    }
+    return map;
+  }, [teamRoster]);
 
   const allLeads = normalizeLeads(leadsPayload);
 
@@ -750,11 +811,23 @@ function Relationships() {
     return allLeads.filter((lead) => leadMatchesNicheFilter(lead.niche, nicheFilters));
   }, [allLeads, nicheFilters]);
 
+  // Assignee filter
+  const assigneeFiltered = useMemo(() => {
+    if (assigneeFilter === ALL_VALUE) return nicheFiltered;
+    if (assigneeFilter === MINE_VALUE) {
+      return myUserId ? nicheFiltered.filter((lead) => lead.assignedTo === myUserId) : nicheFiltered;
+    }
+    if (assigneeFilter === UNASSIGNED_VALUE) {
+      return nicheFiltered.filter((lead) => !lead.assignedTo);
+    }
+    return nicheFiltered.filter((lead) => lead.assignedTo === assigneeFilter);
+  }, [nicheFiltered, assigneeFilter, myUserId]);
+
   // Starred filter
   const starFiltered = useMemo(() => {
-    if (!starredOnly) return nicheFiltered;
-    return nicheFiltered.filter((lead) => starred.has(lead.id));
-  }, [nicheFiltered, starredOnly, starred]);
+    if (!starredOnly) return assigneeFiltered;
+    return assigneeFiltered.filter((lead) => starred.has(lead.id));
+  }, [assigneeFiltered, starredOnly, starred]);
 
   const visibleLeads = useMemo(
     () => starFiltered.filter((lead) => showDead || normalizeLeadStatus(lead.status) !== "dead"),
@@ -813,6 +886,21 @@ function Relationships() {
       clearSelection();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Bulk update failed");
+    }
+  };
+
+  const doBulkAssign = async (targetUserId: string | null, targetLabel: string) => {
+    if (selectedIds.length === 0) return;
+    try {
+      await bulkUpdate.mutateAsync({ ids: selectedIds, updates: { assignedTo: targetUserId } });
+      toast.success(
+        targetUserId
+          ? `Assigned ${selectedIds.length} lead${selectedIds.length === 1 ? "" : "s"} to ${targetLabel}`
+          : `Unassigned ${selectedIds.length} lead${selectedIds.length === 1 ? "" : "s"}`,
+      );
+      clearSelection();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not assign leads");
     }
   };
 
@@ -1160,6 +1248,34 @@ function Relationships() {
                 }}
               />
 
+              <Select
+                value={assigneeFilter}
+                onValueChange={(value) => {
+                  setAssigneeFilter(value);
+                  clearSelection();
+                  resetPage();
+                }}
+              >
+                <SelectTrigger
+                  aria-label="Filter by owner"
+                  className={cn(CONTROL_SURFACE, "h-11 w-44 px-4 shadow-none")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_VALUE}>All Owners</SelectItem>
+                  {myUserId && <SelectItem value={MINE_VALUE}>My Leads</SelectItem>}
+                  <SelectItem value={UNASSIGNED_VALUE}>Unassigned</SelectItem>
+                  {teamRoster
+                    .filter((m) => !m.isMe)
+                    .map((member) => (
+                      <SelectItem key={member.userId} value={member.userId}>
+                        {member.label}&apos;s Leads
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+
               <button
                 type="button"
                 aria-pressed={starredOnly}
@@ -1244,6 +1360,39 @@ function Relationships() {
               ))}
             </SelectContent>
           </Select>
+          {myUserId && (
+            <BulkButton
+              onClick={() => void doBulkAssign(myUserId, "you")}
+              disabled={bulkUpdate.isPending}
+              icon={UserCheck}
+            >
+              Assign to me
+            </BulkButton>
+          )}
+          {teamRoster.length > 0 && (
+            <Select
+              onValueChange={(value) => {
+                if (value === UNASSIGNED_VALUE) {
+                  void doBulkAssign(null, "Unassigned");
+                } else {
+                  const member = teamRoster.find((m) => m.userId === value);
+                  void doBulkAssign(value, member?.label ?? "teammate");
+                }
+              }}
+            >
+              <SelectTrigger className="h-8 w-44 rounded-lg border-border/80 bg-background/60 text-xs shadow-none">
+                <SelectValue placeholder="Assign to…" />
+              </SelectTrigger>
+              <SelectContent>
+                {teamRoster.map((member) => (
+                  <SelectItem key={member.userId} value={member.userId}>
+                    {member.isMe ? `Assign to me (${member.label})` : `Assign to ${member.label}`}
+                  </SelectItem>
+                ))}
+                <SelectItem value={UNASSIGNED_VALUE}>Unassign</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
           <button
             onClick={() => void doBulkDelete()}
             disabled={bulkDelete.isPending}
@@ -1277,6 +1426,7 @@ function Relationships() {
                   lead={lead}
                   selected={selected.has(lead.id)}
                   starred={starred.has(lead.id)}
+                  assigneeLabel={lead.assignedTo ? (rosterLabelMap.get(lead.assignedTo) ?? "Assigned") : null}
                   onOpen={() => openLead(lead.id)}
                   onToggleSelect={() => toggleOne(lead.id)}
                   onToggleStar={() => toggleStar(lead.id)}

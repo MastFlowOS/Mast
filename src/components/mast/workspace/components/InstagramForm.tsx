@@ -1,9 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Instagram, Copy, Check, CheckCircle } from "lucide-react";
+import { Instagram, Copy, Check, CheckCircle, Ban, AlertTriangle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useRecordLeadActivity } from "@/hooks/use-mast-api";
+import {
+  useAddSuppression,
+  useLeadSafetyCheck,
+  useOutreachPacing,
+  useRecordLeadActivity,
+} from "@/hooks/use-mast-api";
 import { ApiError, type Lead } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 
@@ -20,6 +25,28 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
   const [isSent, setIsSent] = useState(false);
   const [copied, setCopied] = useState(false);
   const recordActivity = useRecordLeadActivity();
+  const safetyQuery = useLeadSafetyCheck(lead.id);
+  const pacingQuery = useOutreachPacing();
+  const addSuppression = useAddSuppression();
+
+  const isBlocked = Boolean(safetyQuery?.data?.blocked);
+  const blockMatch = safetyQuery?.data?.match;
+  const igPacing = pacingQuery?.data?.instagram;
+
+  const handleQuickBlockIg = async () => {
+    const ig = normalizeInstagram(lead.instagramHandle);
+    if (!ig) return;
+    try {
+      await addSuppression.mutateAsync({
+        kind: "instagram",
+        value: ig.handle,
+        reason: `Blocked from ${lead.businessName} workspace`,
+      });
+      toast.success(`@${ig.handle} added to Do-Not-Contact list`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not block handle");
+    }
+  };
 
   useEffect(() => {
     setCopied(false);
@@ -109,6 +136,36 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
 
   return (
     <div className="space-y-5">
+      {isBlocked && (
+        <div
+          data-testid="dnc-blocked-banner"
+          className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-200 flex items-start gap-2.5"
+        >
+          <Ban className="size-4 text-red-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-semibold text-red-100">Do-Not-Contact: Outreach Blocked</p>
+            <p className="text-red-200/85">
+              Matched {blockMatch?.kind ?? "handle"} ({blockMatch?.value ?? lead.instagramHandle}).
+              {blockMatch?.reason ? ` Reason: ${blockMatch.reason}.` : ""} Manage your blocklist in Settings.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isBlocked && igPacing && igPacing.level !== "ok" && igPacing.message && (
+        <div
+          data-testid="ig-pacing-warning"
+          className={`rounded-xl border px-4 py-2.5 text-xs flex items-start gap-2.5 ${
+            igPacing.level === "danger"
+              ? "border-red-500/35 bg-red-500/10 text-red-200"
+              : "border-amber-500/35 bg-amber-500/10 text-amber-200"
+          }`}
+        >
+          <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+          <span>{igPacing.message}</span>
+        </div>
+      )}
+
       {!lead.instagramHandle && (
         <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
           No Instagram handle recorded for this lead.
@@ -145,12 +202,26 @@ export function InstagramForm({ lead, body, setBody }: InstagramFormProps) {
           variant="outline"
           size="sm"
           onClick={handleOpen}
-          disabled={!lead.instagramHandle || recordActivity.isPending}
+          disabled={isBlocked || !lead.instagramHandle || recordActivity.isPending}
           className="w-full gap-1.5 sm:w-auto"
         >
           <Instagram className="size-4" />
           Open Instagram{body.trim() ? " + Copy Message" : ""}
         </Button>
+
+        {lead.instagramHandle && !isBlocked && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleQuickBlockIg}
+            disabled={addSuppression.isPending}
+            className="w-full gap-1.5 text-muted-foreground hover:text-red-400 sm:w-auto"
+            title="Add this Instagram handle to your Do-Not-Contact list"
+          >
+            <Ban className="size-3.5" />
+            Do Not Contact
+          </Button>
+        )}
 
         <Button
           variant="ghost"

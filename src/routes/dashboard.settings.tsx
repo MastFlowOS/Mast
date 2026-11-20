@@ -49,6 +49,9 @@ import { GLOBAL_SCOPE } from "@/lib/geo/scope";
 import { RegionMark, RegionOption } from "@/components/mast/discover/TargetRegionCard";
 import { ReplyObservationCard } from "@/components/mast/settings/ReplyObservationCard";
 import { TeamSeatsCard } from "@/components/mast/settings/TeamSeatsCard";
+import { OutreachPlaybooksCard } from "@/components/mast/settings/OutreachPlaybooksCard";
+import { BookingSyncCard } from "@/components/mast/settings/BookingSyncCard";
+import { SafetyDeliverabilityCard } from "@/components/mast/settings/SafetyDeliverabilityCard";
 import { AVATAR_OUTPUT_SIZE, clampPan, computeMinScale, computeSourceRect } from "@/lib/avatarCrop";
 
 export const Route = createFileRoute("/dashboard/settings")({
@@ -1036,6 +1039,15 @@ function SettingsPage() {
         smtpPassword={smtpPassword}
         smtpHasSavedPassword={Boolean(serverSmtp?.hasPassword)}
       />
+
+      {/* ── Row 3c: Custom AI Outreach Playbooks / Voice ──────────────────── */}
+      <OutreachPlaybooksCard />
+
+      {/* ── Row 3d: Booking Link Sync (Calendly / Cal.com) ────────────────── */}
+      <BookingSyncCard />
+
+      {/* ── Row 3e: Deliverability & Do-Not-Contact Safety ────────────────── */}
+      <SafetyDeliverabilityCard defaultSenderEmail={senderEmail || smtpUser} />
 
       {/* ── Row 4: Notifications (Left) + Workspace Info (Right) ────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

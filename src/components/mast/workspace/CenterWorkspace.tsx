@@ -13,6 +13,8 @@ import {
   Check,
   CheckCircle,
   MessageSquareReply,
+  Ban,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,7 +29,14 @@ import {
 import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
-import { useRecordLeadActivity, useSendLeadEmail, useLeadActivities } from "@/hooks/use-mast-api";
+import {
+  useAddSuppression,
+  useLeadActivities,
+  useLeadSafetyCheck,
+  useOutreachPacing,
+  useRecordLeadActivity,
+  useSendLeadEmail,
+} from "@/hooks/use-mast-api";
 import { ApiError, isMissingBackendEndpoint } from "@/lib/api";
 import { getDraftProvenance } from "@/lib/outreach/draftProvenance";
 import { normalizeInstagram } from "@/lib/instagram";
@@ -88,7 +97,39 @@ export function CenterWorkspace({
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
   const sendEmail = useSendLeadEmail();
   const recordActivity = useRecordLeadActivity();
+  const safetyQuery = useLeadSafetyCheck(lead.id);
+  const pacingQuery = useOutreachPacing();
+  const addSuppression = useAddSuppression();
   const { data: activities = [] } = useLeadActivities(lead);
+
+  const isBlocked = Boolean(safetyQuery?.data?.blocked);
+  const blockMatch = safetyQuery?.data?.match;
+  const activePacing =
+    channel === "email"
+      ? pacingQuery?.data?.email
+      : channel === "instagram"
+        ? pacingQuery?.data?.instagram
+        : null;
+
+  const handleQuickBlockLead = async () => {
+    const ig = normalizeInstagram(lead.instagramHandle);
+    const kind = channel === "instagram" && ig ? "instagram" : lead.email ? "email" : ig ? "instagram" : null;
+    const value = kind === "email" ? lead.email : kind === "instagram" ? ig?.handle : null;
+    if (!kind || !value) {
+      toast.error("No email or Instagram handle to block for this lead");
+      return;
+    }
+    try {
+      await addSuppression.mutateAsync({
+        kind,
+        value,
+        reason: `Blocked from ${lead.businessName} workspace`,
+      });
+      toast.success(`${kind === "instagram" ? `@${value}` : value} added to Do-Not-Contact list`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not add to Do-Not-Contact list");
+    }
+  };
   const latestReply = activities.find((a) => a.type === "reply_received");
   const latestReplyMeta = (latestReply?.metadata as Record<string, unknown> | null) || null;
   const replyIntent = typeof latestReplyMeta?.intent === "string" ? latestReplyMeta.intent : null;
@@ -465,6 +506,37 @@ export function CenterWorkspace({
         </div>
       </div>
 
+      {/* ─── DO-NOT-CONTACT & PACING SAFETY BANNERS ─── */}
+      {isBlocked && (
+        <div
+          data-testid="dnc-blocked-banner"
+          className="rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-200 flex items-start gap-2.5"
+        >
+          <Ban className="size-4 text-red-400 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-semibold text-red-100">Do-Not-Contact: Outreach Blocked</p>
+            <p className="text-red-200/85">
+              Matched {blockMatch?.kind ?? "contact"} ({blockMatch?.value ?? lead.email ?? lead.instagramHandle}).
+              {blockMatch?.reason ? ` Reason: ${blockMatch.reason}.` : ""} Manage your blocklist in Settings.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isBlocked && activePacing && activePacing.level !== "ok" && activePacing.message && (
+        <div
+          data-testid="outreach-pacing-warning"
+          className={`rounded-xl border px-3.5 py-2.5 text-xs flex items-start gap-2.5 ${
+            activePacing.level === "danger"
+              ? "border-red-500/35 bg-red-500/10 text-red-200"
+              : "border-amber-500/35 bg-amber-500/10 text-amber-200"
+          }`}
+        >
+          <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+          <span>{activePacing.message}</span>
+        </div>
+      )}
+
       {/* ─── CLIENT REPLY BANNER (when a reply has been observed) ─── */}
       {latestReply && (
         <div
@@ -586,6 +658,7 @@ export function CenterWorkspace({
               type="button"
               variant="outline"
               onClick={handleOpenChannel}
+              disabled={isBlocked}
               className="h-10 gap-2 border-border/70 bg-card/40 text-xs font-medium hover:bg-card text-foreground rounded-xl cursor-pointer"
             >
               <span>
@@ -606,7 +679,7 @@ export function CenterWorkspace({
             <Button
               type="button"
               onClick={channel === "email" ? handleSendConnected : handleMarkSent}
-              disabled={sendEmail.isPending || recordActivity.isPending || !plainText.trim()}
+              disabled={isBlocked || sendEmail.isPending || recordActivity.isPending || !plainText.trim()}
               className="h-10 gap-2 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-medium px-4 rounded-r-none border-r border-indigo-400/30 cursor-pointer"
             >
               {sendEmail.isPending || recordActivity.isPending ? (
@@ -675,6 +748,18 @@ export function CenterWorkspace({
                   <CheckCircle className="size-3.5 text-emerald-400" />
                   <span>{channel === "phone" ? "Mark as Called (Manual)" : "Mark as Sent (Manual)"}</span>
                 </DropdownMenuItem>
+                {!isBlocked && (lead.email || lead.instagramHandle) && (
+                  <>
+                    <DropdownMenuSeparator className="my-1 bg-border/60" />
+                    <DropdownMenuItem
+                      onClick={() => void handleQuickBlockLead()}
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors cursor-pointer"
+                    >
+                      <Ban className="size-3.5 text-red-400" />
+                      <span>Block / Do Not Contact</span>
+                    </DropdownMenuItem>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>

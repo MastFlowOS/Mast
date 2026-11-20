@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
@@ -136,6 +137,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       personalization = {},
       contextNotes,
       tier: clientTier,
+      playbookId,
     } = req.body ?? {};
 
     const leadId = Number(rawLeadId);
@@ -379,6 +381,66 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       .filter(Boolean)
       .join("\n");
 
+    // Optional enrichment from Custom Playbooks, Website Visual Audit, and Booking Link.
+    // All three are wrapped in defensive try/catch so missing migrations or minimal test
+    // mocks never break outreach drafting.
+    let userPlaybook: { name: string; instructions: string; exampleMessages?: string | null } | undefined;
+    try {
+      if (playbookId !== "none") {
+        let pbQuery = (supabaseAdmin as any)
+          .from("outreach_playbooks")
+          .select("id, name, prompt_instructions, example_messages")
+          .eq("user_id", workspaceOwnerId);
+        if (typeof playbookId === "string" && playbookId.trim()) {
+          pbQuery = pbQuery.eq("id", playbookId.trim());
+        } else {
+          pbQuery = pbQuery.eq("is_default", true);
+        }
+        const { data: pb } = await pbQuery.limit(1).maybeSingle();
+        if (pb?.prompt_instructions) {
+          userPlaybook = {
+            name: String(pb.name || "Custom Playbook"),
+            instructions: String(pb.prompt_instructions),
+            exampleMessages: pb.example_messages ? String(pb.example_messages) : null,
+          };
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+
+    let websiteVisualCritique: { visualSummary?: string | null; auditBullets?: string[] } | undefined;
+    try {
+      const { data: audit } = await (supabaseAdmin as any)
+        .from("lead_website_audits")
+        .select("visual_summary, audit_bullets")
+        .eq("lead_id", leadId)
+        .eq("user_id", workspaceOwnerId)
+        .maybeSingle();
+      if (audit && (audit.visual_summary || (Array.isArray(audit.audit_bullets) && audit.audit_bullets.length > 0))) {
+        websiteVisualCritique = {
+          visualSummary: audit.visual_summary ?? null,
+          auditBullets: Array.isArray(audit.audit_bullets) ? audit.audit_bullets.map(String) : [],
+        };
+      }
+    } catch {
+      // Non-fatal
+    }
+
+    let bookingUrl: string | undefined;
+    try {
+      const { data: bookingRow } = await (supabaseAdmin as any)
+        .from("workspace_booking_settings")
+        .select("booking_url")
+        .eq("owner_id", workspaceOwnerId)
+        .maybeSingle();
+      if (bookingRow?.booking_url) {
+        bookingUrl = String(bookingRow.booking_url);
+      }
+    } catch {
+      // Non-fatal
+    }
+
     // Server-enforced model tier policy:
     // - Starter: always Fast tier. Never elevated by client request.
     // - Pro and Premium: Pro tier by default, or Fast tier if explicitly chosen.
@@ -422,9 +484,12 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         profession: focusArea || (lead.profession_slug ? lead.profession_slug.replace(/_/g, " ") : undefined),
         professionSlug: lead.profession_slug || undefined,
         senderName: senderName || fullName || undefined,
+        bookingUrl,
       },
       personalization,
       sequenceHistory,
+      userPlaybook,
+      websiteVisualCritique,
     });
 
     const aiResult = await generateJSON<{ subject?: string | null; body?: string }>({
@@ -494,6 +559,150 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       model: getAiModel(tier),
       tier,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Custom AI Outreach Playbooks / Voice Skills ─────────────────────────────
+
+const playbookReadLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
+const playbookWriteLimiter = createRateLimiter({ windowMs: 60_000, max: 30 });
+
+const PlaybookBodySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(300).optional().nullable(),
+  promptInstructions: z.string().trim().min(10).max(4000),
+  exampleMessages: z.string().trim().max(4000).optional().nullable(),
+  isDefault: z.boolean().optional().default(false),
+});
+
+const PlaybookPatchSchema = PlaybookBodySchema.partial();
+
+function formatPlaybookRow(row: any) {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    description: row.description ?? null,
+    promptInstructions: String(row.prompt_instructions ?? ""),
+    exampleMessages: row.example_messages ?? null,
+    isDefault: Boolean(row.is_default),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+outreachRouter.get("/playbooks", requireAuth, playbookReadLimiter, async (req, res, next) => {
+  try {
+    const ctx = await resolveWorkspaceContext(req.user!.id);
+    const { data, error } = await (supabaseAdmin as any)
+      .from("outreach_playbooks")
+      .select("*")
+      .eq("user_id", ctx.workspaceOwnerId)
+      .order("is_default", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+    return res.json({ playbooks: (data ?? []).map(formatPlaybookRow) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+outreachRouter.post("/playbooks", requireAuth, playbookWriteLimiter, async (req, res, next) => {
+  try {
+    const ctx = await resolveWorkspaceContext(req.user!.id);
+    const parsed = PlaybookBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        code: "invalid_playbook",
+        message: parsed.error.issues[0]?.message || "Valid playbook name and prompt instructions (min 10 chars) required.",
+      });
+    }
+
+    const db = supabaseAdmin as any;
+    if (parsed.data.isDefault) {
+      await db
+        .from("outreach_playbooks")
+        .update({ is_default: false })
+        .eq("user_id", ctx.workspaceOwnerId)
+        .eq("is_default", true);
+    }
+
+    const { data, error } = await db
+      .from("outreach_playbooks")
+      .insert({
+        user_id: ctx.workspaceOwnerId,
+        name: parsed.data.name,
+        description: parsed.data.description || null,
+        prompt_instructions: parsed.data.promptInstructions,
+        example_messages: parsed.data.exampleMessages || null,
+        is_default: parsed.data.isDefault,
+      })
+      .select("*")
+      .single();
+
+    if (error) throw error;
+    return res.status(201).json({ playbook: formatPlaybookRow(data) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+outreachRouter.patch("/playbooks/:id", requireAuth, playbookWriteLimiter, async (req, res, next) => {
+  try {
+    const ctx = await resolveWorkspaceContext(req.user!.id);
+    const parsed = PlaybookPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        code: "invalid_playbook",
+        message: parsed.error.issues[0]?.message || "Invalid playbook update.",
+      });
+    }
+
+    const db = supabaseAdmin as any;
+    if (parsed.data.isDefault === true) {
+      await db
+        .from("outreach_playbooks")
+        .update({ is_default: false })
+        .eq("user_id", ctx.workspaceOwnerId)
+        .eq("is_default", true);
+    }
+
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (parsed.data.name !== undefined) patch.name = parsed.data.name;
+    if (parsed.data.description !== undefined) patch.description = parsed.data.description || null;
+    if (parsed.data.promptInstructions !== undefined) patch.prompt_instructions = parsed.data.promptInstructions;
+    if (parsed.data.exampleMessages !== undefined) patch.example_messages = parsed.data.exampleMessages || null;
+    if (parsed.data.isDefault !== undefined) patch.is_default = parsed.data.isDefault;
+
+    const { data, error } = await db
+      .from("outreach_playbooks")
+      .update(patch)
+      .eq("id", req.params.id)
+      .eq("user_id", ctx.workspaceOwnerId)
+      .select("*")
+      .single();
+
+    if (error) throw error;
+    return res.json({ playbook: formatPlaybookRow(data) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+outreachRouter.delete("/playbooks/:id", requireAuth, playbookWriteLimiter, async (req, res, next) => {
+  try {
+    const ctx = await resolveWorkspaceContext(req.user!.id);
+    const { error } = await (supabaseAdmin as any)
+      .from("outreach_playbooks")
+      .delete()
+      .eq("id", req.params.id)
+      .eq("user_id", ctx.workspaceOwnerId);
+
+    if (error) throw error;
+    return res.json({ success: true });
   } catch (err) {
     next(err);
   }

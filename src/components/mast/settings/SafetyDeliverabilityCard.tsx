@@ -5,6 +5,7 @@ import {
   Ban,
   CheckCircle2,
   Loader2,
+  MailCheck,
   Plus,
   ShieldCheck,
   Trash2,
@@ -29,22 +30,38 @@ const SOURCE_LABELS: Record<SuppressionSource, string> = {
   manual: "Manual",
   bounce: "Bounced",
   unsubscribe: "Unsubscribed",
-  reply_optout: "Opt-out Reply",
+  reply_optout: "Said Stop",
 };
 
-function StatusPill({ label, status }: { label: string; status: DomainCheckStatus }) {
+function CheckBadge({
+  name,
+  meaning,
+  status,
+}: {
+  name: string;
+  meaning: string;
+  status: DomainCheckStatus;
+}) {
   const styles =
     status === "pass"
-      ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+      ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/25"
       : status === "warn"
-        ? "bg-amber-500/10 text-amber-300 border-amber-500/30"
-        : "bg-red-500/10 text-red-300 border-red-500/30";
+        ? "bg-amber-500/10 text-amber-300 border-amber-500/25"
+        : "bg-red-500/10 text-red-300 border-red-500/25";
+  const label = status === "pass" ? "Ready" : status === "warn" ? "Recommended" : "Missing";
   const Icon = status === "pass" ? CheckCircle2 : status === "warn" ? AlertTriangle : XCircle;
+
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${styles}`}>
-      <Icon className="size-3.5" />
-      {label}
-    </span>
+    <div className="rounded-xl border border-border/70 bg-background/60 p-3 flex items-center justify-between gap-3">
+      <div>
+        <p className="text-xs font-semibold text-foreground">{name}</p>
+        <p className="text-[11px] text-muted-foreground">{meaning}</p>
+      </div>
+      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold border shrink-0 ${styles}`}>
+        <Icon className="size-3.5" />
+        {label}
+      </span>
+    </div>
   );
 }
 
@@ -60,7 +77,6 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
   const [domainInput, setDomainInput] = useState(defaultSenderEmail ?? "");
   const [kind, setKind] = useState<SuppressionKind>("email");
   const [value, setValue] = useState("");
-  const [reason, setReason] = useState("");
 
   useEffect(() => {
     if (defaultSenderEmail && !domainInput) {
@@ -75,13 +91,9 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
     const nextVal = includeFooter ? "false" : "true";
     try {
       await saveSettings.mutateAsync({ includeUnsubscribeFooter: nextVal });
-      toast.success(
-        nextVal === "true"
-          ? "1-click unsubscribe footer turned on for outreach emails"
-          : "1-click unsubscribe footer turned off",
-      );
+      toast.success(nextVal === "true" ? "Unsubscribe link enabled" : "Unsubscribe link disabled");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not update opt-out footer setting");
+      toast.error(err instanceof Error ? err.message : "Could not update setting");
     }
   };
 
@@ -89,13 +101,13 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
     e.preventDefault();
     const target = domainInput.trim();
     if (!target) {
-      toast.error("Enter your sender email or domain first.");
+      toast.error("Enter your email or domain first.");
       return;
     }
     try {
       await domainCheck.mutateAsync(target);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not run domain check");
+      toast.error(err instanceof Error ? err.message : "Could not check domain");
     }
   };
 
@@ -104,23 +116,18 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
     const clean = value.trim();
     if (!clean) return;
     try {
-      await addSuppression.mutateAsync({
-        kind,
-        value: clean,
-        reason: reason.trim() || null,
-      });
+      await addSuppression.mutateAsync({ kind, value: clean });
       setValue("");
-      setReason("");
       toast.success("Added to Do-Not-Contact list");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not add blocklist entry");
+      toast.error(err instanceof Error ? err.message : "Could not add entry");
     }
   };
 
   const handleDeleteSuppression = async (id: string) => {
     try {
       await deleteSuppression.mutateAsync(id);
-      toast.success("Removed from Do-Not-Contact list");
+      toast.success("Removed from list");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not remove entry");
     }
@@ -129,26 +136,19 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
   const report = domainCheck.data;
 
   return (
-    <div className="bg-card border border-border/60 rounded-2xl p-6 shadow-sm space-y-6">
-      <div className="flex items-start gap-3">
-        <div className="size-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 grid place-items-center shrink-0">
-          <ShieldCheck className="size-5" />
-        </div>
-        <div>
-          <h2 className="text-base font-bold text-foreground">Deliverability &amp; Do-Not-Contact Safety</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Keep your sender domain out of spam folders and make sure nobody on your team messages opt-outs or blocked leads.
-          </p>
-        </div>
-      </div>
-
-      {/* 1. Domain Health Check */}
-      <div className="rounded-xl border border-border/70 bg-background/60 p-4 space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold text-foreground">Sender Domain Check (SPF, DKIM, DMARC &amp; MX)</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Test the email domain you send from to spot missing DNS records before launching campaigns.
-          </p>
+    <div className="space-y-6">
+      {/* 1. Email Domain Health Check */}
+      <div className="bg-card border border-border/60 rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="size-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 grid place-items-center shrink-0">
+            <ShieldCheck className="size-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-foreground">Email Domain Check</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Checks if your domain is properly verified so cold emails land in the inbox, not spam.
+            </p>
+          </div>
         </div>
 
         <form onSubmit={handleDomainCheck} className="flex flex-col sm:flex-row gap-2">
@@ -156,44 +156,41 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
             type="text"
             value={domainInput}
             onChange={(e) => setDomainInput(e.target.value)}
-            placeholder="you@yourdomain.com or yourdomain.com"
-            className="flex-1 bg-background border border-border/80 focus:border-amber-500 outline-none px-3.5 py-2 rounded-xl text-sm"
+            placeholder="you@yourdomain.com"
+            className="flex-1 bg-background border border-border/80 focus:border-blue-500 outline-none px-3.5 py-2 rounded-xl text-sm"
           />
           <button
             type="submit"
             disabled={domainCheck.isPending}
-            className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
           >
             {domainCheck.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
-            Check Domain Health
+            Check Domain
           </button>
         </form>
 
         {report && (
-          <div className="space-y-3 pt-2 border-t border-border/50">
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusPill label={`MX: ${report.mx.status.toUpperCase()}`} status={report.mx.status} />
-              <StatusPill label={`SPF: ${report.spf.status.toUpperCase()}`} status={report.spf.status} />
-              <StatusPill label={`DMARC: ${report.dmarc.status.toUpperCase()}`} status={report.dmarc.status} />
-              <StatusPill label={`DKIM: ${report.dkim.status.toUpperCase()}`} status={report.dkim.status} />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-muted-foreground">
-              <p><strong className="text-foreground">MX:</strong> {report.mx.detail}</p>
-              <p><strong className="text-foreground">SPF:</strong> {report.spf.detail}</p>
-              <p><strong className="text-foreground">DMARC:</strong> {report.dmarc.detail}</p>
-              <p><strong className="text-foreground">DKIM:</strong> {report.dkim.detail}</p>
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+            <CheckBadge name="MX (Receiving)" meaning="Can receive replies" status={report.mx.status} />
+            <CheckBadge name="SPF (Sending)" meaning="Proves you can send" status={report.spf.status} />
+            <CheckBadge name="DKIM (Signature)" meaning="Verifies your emails" status={report.dkim.status} />
+            <CheckBadge name="DMARC (Protection)" meaning="Protects domain trust" status={report.dmarc.status} />
           </div>
         )}
       </div>
 
-      {/* 2. Optional 1-click unsubscribe footer */}
-      <div className="rounded-xl border border-border/70 bg-background/60 p-4 flex items-center justify-between gap-4">
-        <div className="space-y-0.5">
-          <p className="text-sm font-semibold text-foreground">Add 1-Click Unsubscribe Footer to Emails</p>
-          <p className="text-xs text-muted-foreground">
-            Appends a clean opt-out link to outreach emails. Anyone who clicks it is automatically blocked across your workspace.
-          </p>
+      {/* 2. Unsubscribe Link Toggle */}
+      <div className="bg-card border border-border/60 rounded-2xl p-6 shadow-sm flex items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="size-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 grid place-items-center shrink-0">
+            <MailCheck className="size-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-foreground">Unsubscribe Link</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Adds a 1-click opt-out link to your emails. Anyone who clicks it is blocked automatically.
+            </p>
+          </div>
         </div>
         <button
           type="button"
@@ -202,7 +199,7 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
           disabled={saveSettings.isPending}
           onClick={handleToggleFooter}
           className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors cursor-pointer ${
-            includeFooter ? "bg-emerald-500" : "bg-muted"
+            includeFooter ? "bg-blue-600" : "bg-muted"
           }`}
         >
           <span
@@ -213,23 +210,27 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
         </button>
       </div>
 
-      {/* 3. Do-Not-Contact Blocklist */}
-      <div className="space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-            <Ban className="size-4 text-red-400" />
-            Do-Not-Contact Blocklist ({suppressions.length})
-          </h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Bounced addresses, 1-click unsubscribes, and opt-out replies are added here automatically. You can also block any email, domain, or Instagram handle manually.
-          </p>
+      {/* 3. Do-Not-Contact List */}
+      <div className="bg-card border border-border/60 rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="size-10 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 grid place-items-center shrink-0">
+            <Ban className="size-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-foreground">
+              Do-Not-Contact List ({suppressions.length})
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Nobody on your team can email or DM anyone on this list. Bounces and opt-outs are added here automatically.
+            </p>
+          </div>
         </div>
 
-        <form onSubmit={handleAddSuppression} className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+        <form onSubmit={handleAddSuppression} className="flex flex-col sm:flex-row gap-2">
           <select
             value={kind}
             onChange={(e) => setKind(e.target.value as SuppressionKind)}
-            className="sm:col-span-3 bg-background border border-border/80 outline-none px-3 py-2 rounded-xl text-sm"
+            className="sm:w-36 bg-background border border-border/80 outline-none px-3 py-2 rounded-xl text-sm"
           >
             <option value="email">Email</option>
             <option value="domain">Domain</option>
@@ -244,21 +245,14 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
                 ? "owner@company.com"
                 : kind === "domain"
                   ? "company.com"
-                  : "@brandhandle"
+                  : "@handle"
             }
-            className="sm:col-span-4 bg-background border border-border/80 outline-none px-3 py-2 rounded-xl text-sm"
-          />
-          <input
-            type="text"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="Reason (optional)"
-            className="sm:col-span-3 bg-background border border-border/80 outline-none px-3 py-2 rounded-xl text-sm"
+            className="flex-1 bg-background border border-border/80 outline-none px-3.5 py-2 rounded-xl text-sm"
           />
           <button
             type="submit"
             disabled={addSuppression.isPending || !value.trim()}
-            className="sm:col-span-2 px-3 py-2 rounded-xl bg-red-600/90 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1 cursor-pointer"
+            className="px-4 py-2 rounded-xl bg-red-600/90 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
           >
             {addSuppression.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
             Block
@@ -266,9 +260,7 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
         </form>
 
         {suppressions.length === 0 ? (
-          <p className="text-xs text-muted-foreground py-2">
-            Your blocklist is empty right now.
-          </p>
+          <p className="text-xs text-muted-foreground">No blocked contacts yet.</p>
         ) : (
           <div className="max-h-56 overflow-y-auto divide-y divide-border/50 rounded-xl border border-border/70 bg-background/50">
             {suppressions.map((item) => (
@@ -281,16 +273,13 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-border/70 text-muted-foreground">
                     {SOURCE_LABELS[item.source] ?? item.source}
                   </span>
-                  {item.reason && (
-                    <span className="text-muted-foreground truncate">— {item.reason}</span>
-                  )}
                 </div>
                 <button
                   type="button"
                   onClick={() => handleDeleteSuppression(item.id)}
                   disabled={deleteSuppression.isPending}
                   className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0 cursor-pointer"
-                  title="Remove from Do-Not-Contact"
+                  title="Remove"
                 >
                   <Trash2 className="size-3.5" />
                 </button>

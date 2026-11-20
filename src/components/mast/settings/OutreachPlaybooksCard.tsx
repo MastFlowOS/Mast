@@ -3,9 +3,9 @@ import { toast } from "sonner";
 import {
   Check,
   Loader2,
+  MessageSquareText,
   Pencil,
   Plus,
-  Sparkles,
   Star,
   Trash2,
   Upload,
@@ -75,7 +75,7 @@ export function OutreachPlaybooksCard() {
     e.target.value = "";
     if (!file) return;
     if (file.size > 100_000) {
-      toast.error("Prompt file is too large (max 100 KB).");
+      toast.error("File is too large (max 100 KB).");
       return;
     }
     try {
@@ -89,7 +89,7 @@ export function OutreachPlaybooksCard() {
         setName(file.name.replace(/\.(txt|md|markdown)$/i, "").slice(0, 80));
       }
       setComposerOpen(true);
-      toast.success(`Loaded "${file.name}" into your playbook`);
+      toast.success(`Loaded "${file.name}"`);
     } catch {
       toast.error("Could not read that file.");
     }
@@ -100,11 +100,11 @@ export function OutreachPlaybooksCard() {
     const cleanName = name.trim();
     const cleanPrompt = promptInstructions.trim();
     if (!cleanName) {
-      toast.error("Give your playbook a name.");
+      toast.error("Enter a name first.");
       return;
     }
     if (cleanPrompt.length < 10) {
-      toast.error("Write at least a short instruction (10+ characters) for how the AI should sound.");
+      toast.error("Write at least a short instruction (10+ characters).");
       return;
     }
 
@@ -118,7 +118,7 @@ export function OutreachPlaybooksCard() {
           exampleMessages: exampleMessages.trim() || null,
           isDefault,
         });
-        toast.success("Outreach playbook updated");
+        toast.success("Playbook updated");
       } else {
         await createPlaybook.mutateAsync({
           name: cleanName,
@@ -127,7 +127,7 @@ export function OutreachPlaybooksCard() {
           exampleMessages: exampleMessages.trim() || null,
           isDefault,
         });
-        toast.success("Outreach playbook saved");
+        toast.success("Playbook saved");
       }
       resetForm();
     } catch (err) {
@@ -138,9 +138,9 @@ export function OutreachPlaybooksCard() {
   const handleSetDefault = async (pb: OutreachPlaybook) => {
     try {
       await updatePlaybook.mutateAsync({ id: pb.id, isDefault: !pb.isDefault });
-      toast.success(pb.isDefault ? `"${pb.name}" is no longer the default` : `"${pb.name}" set as default voice`);
+      toast.success(pb.isDefault ? `"${pb.name}" unset as default` : `"${pb.name}" set as default`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not update default playbook");
+      toast.error(err instanceof Error ? err.message : "Could not update default");
     }
   };
 
@@ -160,13 +160,13 @@ export function OutreachPlaybooksCard() {
     <div className="bg-card border border-border/60 rounded-2xl p-6 shadow-sm space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-start gap-3">
-          <div className="size-10 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-400 grid place-items-center shrink-0">
-            <Sparkles className="size-5" />
+          <div className="size-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 grid place-items-center shrink-0">
+            <MessageSquareText className="size-5" />
           </div>
           <div>
-            <h2 className="text-base font-bold text-foreground">AI Outreach Playbooks &amp; Custom Voice</h2>
+            <h2 className="text-base font-bold text-foreground">AI Outreach Voice</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Upload your own outreach skill, prompt, or message examples so AI messages sound like you — not a template.
+              Teach the AI how you write so messages sound like you.
             </p>
           </div>
         </div>
@@ -190,10 +190,10 @@ export function OutreachPlaybooksCard() {
           <button
             type="button"
             onClick={openNew}
-            className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <Plus className="size-3.5" />
-            New Playbook
+            New Voice
           </button>
         </div>
       </div>
@@ -201,17 +201,17 @@ export function OutreachPlaybooksCard() {
       {composerOpen && (
         <form
           onSubmit={handleSave}
-          className="rounded-xl border border-violet-500/25 bg-violet-500/[0.04] p-4 space-y-3.5"
+          className="rounded-xl border border-border/80 bg-background/60 p-4 space-y-3.5"
         >
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold text-foreground">
-              {editingId ? "Edit Outreach Playbook" : "Create New Outreach Playbook"}
+              {editingId ? "Edit Voice" : "New Voice"}
             </p>
             <button
               type="button"
               onClick={resetForm}
               className="text-muted-foreground hover:text-foreground p-1 rounded-lg cursor-pointer"
-              aria-label="Close playbook editor"
+              aria-label="Close editor"
             >
               <X className="size-4" />
             </button>
@@ -220,27 +220,27 @@ export function OutreachPlaybooksCard() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-semibold text-muted-foreground mb-1">
-                Playbook Name
+                Name
               </label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Casual Founder DM, Direct Redesign Pitch"
-                className="w-full bg-background border border-border/80 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none px-3 py-2 rounded-xl text-sm"
+                placeholder="e.g. Casual DM, Direct Pitch"
+                className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3 py-2 rounded-xl text-sm"
                 maxLength={120}
               />
             </div>
             <div>
               <label className="block text-xs font-semibold text-muted-foreground mb-1">
-                Short Note (optional)
+                Note (optional)
               </label>
               <input
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="When to use this style"
-                className="w-full bg-background border border-border/80 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none px-3 py-2 rounded-xl text-sm"
+                placeholder="e.g. Use for local cafes"
+                className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3 py-2 rounded-xl text-sm"
                 maxLength={300}
               />
             </div>
@@ -249,32 +249,32 @@ export function OutreachPlaybooksCard() {
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="block text-xs font-semibold text-muted-foreground">
-                Prompt / Skill Instructions
+                How should the AI write?
               </label>
               <span className="text-[11px] text-muted-foreground">
                 {promptInstructions.length} / 4000
               </span>
             </div>
             <textarea
-              rows={5}
+              rows={4}
               value={promptInstructions}
               onChange={(e) => setPromptInstructions(e.target.value)}
-              placeholder="Write how you want the AI to talk, your hook style, your CTA, words to avoid, or paste a full custom skill prompt..."
-              className="w-full bg-background border border-border/80 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none px-3 py-2.5 rounded-xl text-sm resize-y"
+              placeholder="Write your rules, tone, or paste a prompt file..."
+              className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3 py-2.5 rounded-xl text-sm resize-y"
               maxLength={4000}
             />
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-muted-foreground mb-1">
-              Example Messages You&apos;ve Sent (optional)
+              Example messages (optional)
             </label>
             <textarea
               rows={3}
               value={exampleMessages}
               onChange={(e) => setExampleMessages(e.target.value)}
-              placeholder="Paste 1-2 real outreach messages you wrote so the AI matches your exact rhythm and tone."
-              className="w-full bg-background border border-border/80 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none px-3 py-2.5 rounded-xl text-sm resize-y"
+              placeholder="Paste 1-2 real messages you've sent so the AI copies your style."
+              className="w-full bg-background border border-border/80 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none px-3 py-2.5 rounded-xl text-sm resize-y"
               maxLength={4000}
             />
           </div>
@@ -285,9 +285,9 @@ export function OutreachPlaybooksCard() {
                 type="checkbox"
                 checked={isDefault}
                 onChange={(e) => setIsDefault(e.target.checked)}
-                className="rounded border-border accent-violet-500"
+                className="rounded border-border accent-blue-500"
               />
-              Use as my default AI voice in the Lead Workspace
+              Set as default voice
             </label>
 
             <div className="flex items-center gap-2">
@@ -301,10 +301,10 @@ export function OutreachPlaybooksCard() {
               <button
                 type="submit"
                 disabled={isSaving}
-                className="px-4 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
               >
                 {isSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-                {editingId ? "Save Changes" : "Save Playbook"}
+                {editingId ? "Save Changes" : "Save Voice"}
               </button>
             </div>
           </div>
@@ -314,20 +314,17 @@ export function OutreachPlaybooksCard() {
       {playbooksQuery.isLoading ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
           <Loader2 className="size-3.5 animate-spin" />
-          Loading your outreach playbooks...
+          Loading...
         </div>
       ) : playbooks.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border/80 bg-background/40 p-4 text-xs text-muted-foreground flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <span>
-            No custom playbooks yet. Add one (or upload a <code className="text-foreground">.txt</code> /{" "}
-            <code className="text-foreground">.md</code> prompt) to test different angles and make AI messages feel like you.
-          </span>
+          <span>No custom voices yet. Add one or upload a prompt file.</span>
           <button
             type="button"
             onClick={openNew}
-            className="text-violet-400 hover:text-violet-300 font-semibold shrink-0 cursor-pointer"
+            className="text-blue-400 hover:text-blue-300 font-semibold shrink-0 cursor-pointer"
           >
-            Create your first playbook →
+            Add your first voice →
           </button>
         </div>
       ) : (
@@ -341,7 +338,7 @@ export function OutreachPlaybooksCard() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-semibold text-foreground">{pb.name}</span>
                   {pb.isDefault && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-500/15 text-violet-300 border border-violet-500/30">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-500/15 text-blue-300 border border-blue-500/30">
                       <Star className="size-2.5 fill-current" />
                       Default
                     </span>
@@ -360,10 +357,9 @@ export function OutreachPlaybooksCard() {
                   type="button"
                   onClick={() => handleSetDefault(pb)}
                   disabled={updatePlaybook.isPending}
-                  title={pb.isDefault ? "Unset default" : "Set as default voice"}
                   className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
                     pb.isDefault
-                      ? "border-violet-500/40 bg-violet-500/10 text-violet-300"
+                      ? "border-blue-500/40 bg-blue-500/10 text-blue-300"
                       : "border-border/70 hover:bg-muted text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -373,7 +369,7 @@ export function OutreachPlaybooksCard() {
                   type="button"
                   onClick={() => openEdit(pb)}
                   className="p-1.5 rounded-lg border border-border/70 hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                  title="Edit playbook"
+                  title="Edit"
                 >
                   <Pencil className="size-3.5" />
                 </button>
@@ -382,13 +378,13 @@ export function OutreachPlaybooksCard() {
                     <button
                       type="button"
                       className="p-1.5 rounded-lg border border-border/70 hover:bg-destructive/10 text-muted-foreground hover:text-destructive cursor-pointer"
-                      title="Delete playbook"
+                      title="Delete"
                     >
                       <Trash2 className="size-3.5" />
                     </button>
                   }
                   title={`Delete "${pb.name}"?`}
-                  description="This removes the custom playbook from your workspace. Existing drafts aren't affected."
+                  description="This removes the voice from your workspace."
                   confirmText="Delete"
                   variant="destructive"
                   onConfirm={() => handleDelete(pb.id)}

@@ -25,6 +25,11 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Users,
+  Sparkles,
+  CalendarCheck2,
+  ShieldCheck,
+  Inbox,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { ApiError } from "@/lib/api";
@@ -63,6 +68,68 @@ export const Route = createFileRoute("/dashboard/settings")({
 
 const COUNTRY_NAMES: string[] = COUNTRIES.map((c) => c.name).sort((a, b) => a.localeCompare(b));
 const BROAD_SCOPES: string[] = [...REGION_NAMES, GLOBAL_SCOPE];
+
+type SettingsSectionId =
+  | "general"
+  | "team"
+  | "notifications"
+  | "email"
+  | "replies"
+  | "playbooks"
+  | "booking"
+  | "safety"
+  | "danger";
+
+interface SettingsNavItem {
+  id: SettingsSectionId;
+  label: string;
+  icon: typeof User;
+}
+
+interface SettingsNavGroup {
+  title: string;
+  items: SettingsNavItem[];
+}
+
+const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
+  {
+    title: "Workspace",
+    items: [
+      { id: "general", label: "General & Discovery", icon: User },
+      { id: "team", label: "Team & Seats", icon: Users },
+      { id: "notifications", label: "Notifications", icon: Bell },
+    ],
+  },
+  {
+    title: "Outreach & AI",
+    items: [
+      { id: "email", label: "Email & Sender", icon: Mail },
+      { id: "replies", label: "Reply Observation", icon: Inbox },
+      { id: "playbooks", label: "AI Playbooks", icon: Sparkles },
+      { id: "booking", label: "Booking Sync", icon: CalendarCheck2 },
+    ],
+  },
+  {
+    title: "Safety & Account",
+    items: [
+      { id: "safety", label: "Deliverability & Safety", icon: ShieldCheck },
+      { id: "danger", label: "Danger Zone", icon: AlertTriangle },
+    ],
+  },
+];
+
+const VALID_SETTINGS_SECTIONS = new Set<SettingsSectionId>(
+  SETTINGS_NAV_GROUPS.flatMap((g) => g.items.map((i) => i.id)),
+);
+
+function getInitialSettingsSection(): SettingsSectionId {
+  if (typeof window === "undefined") return "general";
+  const param = new URLSearchParams(window.location.search).get("section");
+  if (param && VALID_SETTINGS_SECTIONS.has(param as SettingsSectionId)) {
+    return param as SettingsSectionId;
+  }
+  return "general";
+}
 
 interface SettingsBaseline {
   fullName: string;
@@ -107,6 +174,16 @@ function SettingsPage() {
 
   // Baseline for dirty tracking
   const [baseline, setBaseline] = useState<SettingsBaseline | null>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(getInitialSettingsSection);
+
+  const selectSection = (section: SettingsSectionId) => {
+    setActiveSection(section);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", section);
+      window.history.replaceState(null, "", url.toString());
+    }
+  };
 
   // Profile - initialize immediately from auth user/settings so basic identity renders without delay
   const [fullName, setFullName] = useState(() => auth?.user?.fullName ?? "");
@@ -655,13 +732,13 @@ function SettingsPage() {
   });
 
   return (
-    <div className="relative min-h-full p-6 md:p-8 max-w-6xl mx-auto space-y-6 pb-28">
+    <div className="relative min-h-full p-6 md:p-8 max-w-7xl mx-auto space-y-6 pb-28">
       {/* ── Top Header ──────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Settings</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage your account, workspace, and preferences.
+            Manage your account, workspace, outreach, and safety preferences.
           </p>
         </div>
 
@@ -671,8 +748,103 @@ function SettingsPage() {
         </div>
       </div>
 
-      {/* ── Row 1: Account (Left) + Workspace (Right) ───────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* ── Mobile / Tablet Horizontal Submenu ──────────────────────────────── */}
+      <div className="lg:hidden -mx-1 px-1 overflow-x-auto pb-1">
+        <div className="inline-flex items-center gap-1.5 min-w-full">
+          {SETTINGS_NAV_GROUPS.flatMap((group) =>
+            group.items.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeSection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => selectSection(item.id)}
+                  className={cn(
+                    "inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium whitespace-nowrap border transition-all cursor-pointer",
+                    isActive
+                      ? "bg-blue-600/15 text-blue-300 border-blue-500/40 shadow-sm"
+                      : "bg-card/60 text-muted-foreground border-border/60 hover:text-foreground hover:bg-card",
+                  )}
+                >
+                  <Icon className={cn("size-3.5 shrink-0", isActive ? "text-blue-400" : "text-muted-foreground")} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            }),
+          )}
+        </div>
+      </div>
+
+      {/* ── Main Two-Column Settings Layout ─────────────────────────────────── */}
+      <div className="flex flex-col lg:flex-row items-start gap-6">
+        {/* Desktop Sticky Left Submenu */}
+        <aside className="hidden lg:block w-56 shrink-0 sticky top-6">
+          <nav
+            aria-label="Settings sections"
+            className="divide-y divide-border/50"
+          >
+            {SETTINGS_NAV_GROUPS.map((group, groupIdx) => (
+              <div
+                key={group.title}
+                className={cn("space-y-1", groupIdx > 0 && "pt-4 mt-4")}
+              >
+                <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80">
+                  {group.title}
+                </div>
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeSection === item.id;
+                  const isDanger = item.id === "danger";
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => selectSection(item.id)}
+                      className={cn(
+                        "w-full flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-all cursor-pointer text-left",
+                        isActive
+                          ? isDanger
+                            ? "bg-destructive/15 text-destructive border border-destructive/30 shadow-xs"
+                            : "bg-blue-600/15 text-foreground border border-blue-500/30 shadow-xs"
+                          : isDanger
+                            ? "text-muted-foreground hover:text-destructive hover:bg-destructive/5 border border-transparent"
+                            : "text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent",
+                      )}
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <Icon
+                          className={cn(
+                            "size-4 shrink-0",
+                            isActive
+                              ? isDanger
+                                ? "text-destructive"
+                                : "text-blue-400"
+                              : "text-muted-foreground",
+                          )}
+                        />
+                        <span className="truncate">{item.label}</span>
+                      </span>
+                      {isDirty && (item.id === "general" || item.id === "email" || item.id === "notifications") && (
+                        <span
+                          className="size-1.5 rounded-full bg-amber-400 shrink-0"
+                          title="Unsaved changes"
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+        </aside>
+
+        {/* Active Settings Content Panel */}
+        <div className="flex-1 min-w-0 w-full space-y-6">
+          {activeSection === "general" && (
+            <>
+              {/* ── Account (Left) + Workspace (Right) ───────────────────────── */}
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Account Card */}
         <SettingsCard
           icon={User}
@@ -787,8 +959,85 @@ function SettingsPage() {
         </div>
       </SettingsCard>
 
-      {/* ── Row 3: Outreach (Left) + Sender Identity (Right) ────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Workspace Info Card */}
+              <SettingsCard
+                icon={Layers}
+                title="Workspace Info"
+                desc="View your workspace details."
+              >
+                <div className="space-y-4 py-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground text-xs font-medium">Workspace ID</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-foreground font-medium">{displayWsId}</span>
+                      <button
+                        type="button"
+                        onClick={copyWorkspaceId}
+                        title="Copy workspace ID"
+                        className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded"
+                      >
+                        <Copy className="size-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground text-xs font-medium">Created Date</span>
+                    <span className="text-xs font-medium text-foreground">{createdDate}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground text-xs font-medium">Current Plan</span>
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      {currentPlan}
+                    </span>
+                  </div>
+
+                  {/* Opportunities Monthly */}
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground font-medium">Opportunities (Monthly)</span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-semibold text-foreground">
+                          {monthlyUsed} / {monthlyLimit}
+                        </span>
+                        <span className="text-muted-foreground font-medium w-8 text-right">{monthlyPct}%</span>
+                      </div>
+                    </div>
+                    <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                        style={{ width: `${monthlyPct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Opportunities Daily */}
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground font-medium">Opportunities (Daily)</span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-semibold text-foreground">
+                          {dailyUsed} / {dailyLimit}
+                        </span>
+                        <span className="text-muted-foreground font-medium w-8 text-right">{dailyPct}%</span>
+                      </div>
+                    </div>
+                    <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                        style={{ width: `${dailyPct}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </SettingsCard>
+            </>
+          )}
+
+          {activeSection === "email" && (
+            /* ── Outreach (Left) + Sender Identity (Right) ────────────────── */
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Outreach Card */}
         <SettingsCard
           icon={Mail}
@@ -1031,202 +1280,129 @@ function SettingsPage() {
           </div>
         </SettingsCard>
       </div>
+          )}
 
-      {/* ── Row 3b: Client Reply Observation (IMAP & Instagram) ───────────── */}
-      <ReplyObservationCard
-        smtpHost={smtpHost}
-        smtpUser={smtpUser}
-        smtpPassword={smtpPassword}
-        smtpHasSavedPassword={Boolean(serverSmtp?.hasPassword)}
-      />
-
-      {/* ── Row 3c: Custom AI Outreach Playbooks / Voice ──────────────────── */}
-      <OutreachPlaybooksCard />
-
-      {/* ── Row 3d: Booking Link Sync (Calendly / Cal.com) ────────────────── */}
-      <BookingSyncCard />
-
-      {/* ── Row 3e: Deliverability & Do-Not-Contact Safety ────────────────── */}
-      <SafetyDeliverabilityCard defaultSenderEmail={senderEmail || smtpUser} />
-
-      {/* ── Row 4: Notifications (Left) + Workspace Info (Right) ────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Notifications Card (Complete original set restored) */}
-        <SettingsCard
-          icon={Bell}
-          title="Notifications"
-          desc="Choose what notifications you want to receive."
-        >
-          <div className="divide-y divide-border/40 -my-1">
-            <NotificationRow
-              label="New Leads Available"
-              desc="When new leads are discovered or imported into your workspace."
-              checked={notifyNewLeads}
-              onChange={setNotifyNewLeads}
+          {activeSection === "replies" && (
+            <ReplyObservationCard
+              smtpHost={smtpHost}
+              smtpUser={smtpUser}
+              smtpPassword={smtpPassword}
+              smtpHasSavedPassword={Boolean(serverSmtp?.hasPassword)}
             />
-            <NotificationRow
-              label="Credit Limit Reached"
-              desc="When your monthly or daily credit allowance is depleted."
-              checked={notifyCreditLimit}
-              onChange={setNotifyCreditLimit}
-            />
-            <NotificationRow
-              label="Daily Credits Reset"
-              desc="When your daily opportunity allowance resets."
-              checked={notifyCreditsReset}
-              onChange={setNotifyCreditsReset}
-            />
-            <NotificationRow
-              label="Plan Changes"
-              desc="Updates regarding your subscription tier or quota changes."
-              checked={notifyPlanChanges}
-              onChange={setNotifyPlanChanges}
-            />
-            <NotificationRow
-              label="Billing Updates"
-              desc="Invoices, payment receipts, and billing notifications."
-              checked={notifyBilling}
-              onChange={setNotifyBilling}
-            />
-            <NotificationRow
-              label="System Announcements"
-              desc="Platform updates, maintenance, and major feature releases."
-              checked={notifyAnnouncements}
-              onChange={setNotifyAnnouncements}
-            />
-            <NotificationRow
-              label="Outreach Replies"
-              desc="Real-time alerts when leads reply via Email or Instagram."
-              checked={notifyOutreachReplies}
-              onChange={setNotifyOutreachReplies}
-            />
-          </div>
-        </SettingsCard>
+          )}
 
-        {/* Workspace Info Card */}
-        <SettingsCard
-          icon={Layers}
-          title="Workspace Info"
-          desc="View your workspace details."
-        >
-          <div className="space-y-4 py-1">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground text-xs font-medium">Workspace ID</span>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs text-foreground font-medium">{displayWsId}</span>
-                <button
-                  type="button"
-                  onClick={copyWorkspaceId}
-                  title="Copy workspace ID"
-                  className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded"
-                >
-                  <Copy className="size-3.5" />
-                </button>
-              </div>
-            </div>
+          {activeSection === "playbooks" && <OutreachPlaybooksCard />}
 
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground text-xs font-medium">Created Date</span>
-              <span className="text-xs font-medium text-foreground">{createdDate}</span>
-            </div>
+          {activeSection === "booking" && <BookingSyncCard />}
 
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground text-xs font-medium">Current Plan</span>
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                {currentPlan}
-              </span>
-            </div>
+          {activeSection === "safety" && (
+            <SafetyDeliverabilityCard defaultSenderEmail={senderEmail || smtpUser} />
+          )}
 
-            {/* Opportunities Monthly */}
-            <div className="space-y-1.5 pt-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground font-medium">Opportunities (Monthly)</span>
-                <div className="flex items-center gap-3">
-                  <span className="font-semibold text-foreground">
-                    {monthlyUsed} / {monthlyLimit}
-                  </span>
-                  <span className="text-muted-foreground font-medium w-8 text-right">{monthlyPct}%</span>
-                </div>
-              </div>
-              <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-600 rounded-full transition-all duration-300"
-                  style={{ width: `${monthlyPct}%` }}
-                />
-              </div>
-            </div>
-
-            {/* Opportunities Daily */}
-            <div className="space-y-1.5 pt-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground font-medium">Opportunities (Daily)</span>
-                <div className="flex items-center gap-3">
-                  <span className="font-semibold text-foreground">
-                    {dailyUsed} / {dailyLimit}
-                  </span>
-                  <span className="text-muted-foreground font-medium w-8 text-right">{dailyPct}%</span>
-                </div>
-              </div>
-              <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-600 rounded-full transition-all duration-300"
-                  style={{ width: `${dailyPct}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        </SettingsCard>
-      </div>
-
-      {/* ── Row 4b: Team & Seats (Agency Workspaces) ────────────────────────── */}
-      <TeamSeatsCard />
-
-      {/* ── Row 5: Danger Zone (Full Width) ─────────────────────────────────── */}
-      <div className="border border-destructive/20 bg-card rounded-2xl p-6 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="size-10 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive grid place-items-center shrink-0">
-              <Trash2 className="size-5" />
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-destructive">Danger Zone</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Permanently delete your workspace and all associated data.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 self-end sm:self-auto shrink-0">
-            {auth?.user?.workspaceStatus === "disabled" ? (
-              <button
-                type="button"
-                disabled={enablingWorkspace}
-                onClick={handleEnableWorkspace}
-                className="px-3.5 py-2 rounded-xl border border-brand/40 text-brand text-xs font-semibold hover:bg-brand/10 transition-colors inline-flex items-center gap-1.5"
-              >
-                <Check className="size-3.5" />
-                {enablingWorkspace ? "Enabling..." : "Enable Workspace"}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowDisableModal(true)}
-                className="px-3.5 py-2 rounded-xl border border-border/80 bg-background hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5"
-              >
-                <Power className="size-3.5 text-orange-400" />
-                Pause Workspace
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setShowDeleteModal(true)}
-              className="px-4 py-2 rounded-xl border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors inline-flex items-center gap-2"
+          {activeSection === "notifications" && (
+            <SettingsCard
+              icon={Bell}
+              title="Notifications"
+              desc="Choose what notifications you want to receive."
             >
-              <Trash2 className="size-3.5" />
-              Delete Workspace
-            </button>
-          </div>
+              <div className="divide-y divide-border/40 -my-1">
+                <NotificationRow
+                  label="New Leads Available"
+                  desc="When new leads are discovered or imported into your workspace."
+                  checked={notifyNewLeads}
+                  onChange={setNotifyNewLeads}
+                />
+                <NotificationRow
+                  label="Credit Limit Reached"
+                  desc="When your monthly or daily credit allowance is depleted."
+                  checked={notifyCreditLimit}
+                  onChange={setNotifyCreditLimit}
+                />
+                <NotificationRow
+                  label="Daily Credits Reset"
+                  desc="When your daily opportunity allowance resets."
+                  checked={notifyCreditsReset}
+                  onChange={setNotifyCreditsReset}
+                />
+                <NotificationRow
+                  label="Plan Changes"
+                  desc="Updates regarding your subscription tier or quota changes."
+                  checked={notifyPlanChanges}
+                  onChange={setNotifyPlanChanges}
+                />
+                <NotificationRow
+                  label="Billing Updates"
+                  desc="Invoices, payment receipts, and billing notifications."
+                  checked={notifyBilling}
+                  onChange={setNotifyBilling}
+                />
+                <NotificationRow
+                  label="System Announcements"
+                  desc="Platform updates, maintenance, and major feature releases."
+                  checked={notifyAnnouncements}
+                  onChange={setNotifyAnnouncements}
+                />
+                <NotificationRow
+                  label="Outreach Replies"
+                  desc="Real-time alerts when leads reply via Email or Instagram."
+                  checked={notifyOutreachReplies}
+                  onChange={setNotifyOutreachReplies}
+                />
+              </div>
+            </SettingsCard>
+          )}
+
+          {activeSection === "team" && <TeamSeatsCard />}
+
+          {activeSection === "danger" && (
+            <div className="border border-destructive/20 bg-card rounded-2xl p-6 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start sm:items-center gap-3">
+                  <div className="size-10 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive grid place-items-center shrink-0">
+                    <Trash2 className="size-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-destructive">Danger Zone</h2>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Permanently delete your workspace and all associated data.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 self-end sm:self-auto shrink-0">
+                  {auth?.user?.workspaceStatus === "disabled" ? (
+                    <button
+                      type="button"
+                      disabled={enablingWorkspace}
+                      onClick={handleEnableWorkspace}
+                      className="px-3.5 py-2 rounded-xl border border-brand/40 text-brand text-xs font-semibold hover:bg-brand/10 transition-colors inline-flex items-center gap-1.5"
+                    >
+                      <Check className="size-3.5" />
+                      {enablingWorkspace ? "Enabling..." : "Enable Workspace"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowDisableModal(true)}
+                      className="px-3.5 py-2 rounded-xl border border-border/80 bg-background hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5"
+                    >
+                      <Power className="size-3.5 text-orange-400" />
+                      Pause Workspace
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteModal(true)}
+                    className="px-4 py-2 rounded-xl border border-destructive/40 text-destructive text-xs font-semibold hover:bg-destructive/10 transition-colors inline-flex items-center gap-2"
+                  >
+                    <Trash2 className="size-3.5" />
+                    Delete Workspace
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

@@ -150,6 +150,9 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+    if (!Element.prototype.scrollIntoView) {
+      Element.prototype.scrollIntoView = vi.fn();
+    }
     h.clipboardText = "";
     h.userPlan = "free";
     h.aiConfigured = true;
@@ -1192,8 +1195,9 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
         />
       );
 
-      const playbookSelect = screen.getByLabelText(/voice \/ playbook/i);
-      fireEvent.change(playbookSelect, { target: { value: "pb-direct" } });
+      const playbookTrigger = screen.getByLabelText(/voice \/ playbook/i);
+      fireEvent.click(playbookTrigger);
+      fireEvent.click(await screen.findByText("Direct Redesign Pitch"));
       fireEvent.click(screen.getByRole("button", { name: /generate draft/i }));
 
       await waitFor(() => {

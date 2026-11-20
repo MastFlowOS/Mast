@@ -84,15 +84,25 @@ export function SafetyDeliverabilityCard({ defaultSenderEmail }: SafetyDeliverab
     }
   }, [defaultSenderEmail, domainInput]);
 
-  const includeFooter = settings?.includeUnsubscribeFooter === "true";
+  const includeFooterFromSettings = settings?.includeUnsubscribeFooter === "true";
+  const [includeFooter, setIncludeFooter] = useState(includeFooterFromSettings);
+  useEffect(() => {
+    setIncludeFooter(includeFooterFromSettings);
+  }, [includeFooterFromSettings]);
+
   const suppressions = suppressionsQuery.data?.suppressions ?? [];
 
   const handleToggleFooter = async () => {
-    const nextVal = includeFooter ? "false" : "true";
+    const prev = includeFooter;
+    const nextVal = prev ? "false" : "true";
+    setIncludeFooter(!prev);
     try {
-      await saveSettings.mutateAsync({ includeUnsubscribeFooter: nextVal });
+      await saveSettings.mutateAsync({
+        settings: { includeUnsubscribeFooter: nextVal },
+      });
       toast.success(nextVal === "true" ? "Unsubscribe link enabled" : "Unsubscribe link disabled");
     } catch (err) {
+      setIncludeFooter(prev);
       toast.error(err instanceof Error ? err.message : "Could not update setting");
     }
   };

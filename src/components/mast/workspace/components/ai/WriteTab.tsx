@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import type { Lead, OutreachTone } from "@/lib/api";
 import type { Channel } from "@/routes/dashboard.leads.$leadId";
@@ -299,31 +300,35 @@ export function WriteTab({
       {generationMode === "ai" && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-[11px]">
-            <label htmlFor="ai-playbook-select" className="font-semibold text-foreground">
-              Voice / Playbook
-            </label>
+            <span className="font-semibold text-foreground">Voice</span>
             <span className="text-[10px] text-muted-foreground">
-              {playbooks.length > 0 ? `${playbooks.length} saved` : "Add in Settings"}
+              {playbooks.length > 0 ? `${playbooks.length} saved` : "Add custom in Settings"}
             </span>
           </div>
-          <select
-            id="ai-playbook-select"
-            aria-label="Voice / Playbook"
-            value={selectedPlaybookId}
-            onChange={(e) => setSelectedPlaybookId(e.target.value)}
-            className="w-full h-8 px-2.5 rounded-lg bg-card/50 border border-border/60 text-xs text-foreground outline-none focus:border-indigo-500"
-          >
-            <option value="auto">
-              {defaultPlaybook ? `Auto (${defaultPlaybook.name} — Default)` : "Auto (MAST Default Voice)"}
-            </option>
-            {playbooks.map((pb) => (
-              <option key={pb.id} value={pb.id}>
-                {pb.name}
-                {pb.isDefault ? " (Default)" : ""}
-              </option>
-            ))}
-            <option value="none">MAST Built-in Voice (Ignore Custom Default)</option>
-          </select>
+          <Select value={selectedPlaybookId} onValueChange={setSelectedPlaybookId}>
+            <SelectTrigger
+              aria-label="Voice / Playbook"
+              className="h-8 w-full rounded-lg bg-card/50 border-border/60 text-xs text-foreground focus:ring-1 focus:ring-blue-500"
+            >
+              <SelectValue placeholder="MAST Default" />
+            </SelectTrigger>
+            <SelectContent className="bg-[#101726] border-border text-xs">
+              <SelectItem value="auto" className="text-xs">
+                {defaultPlaybook ? `Default: ${defaultPlaybook.name}` : "MAST Default"}
+              </SelectItem>
+              {playbooks.map((pb) => (
+                <SelectItem key={pb.id} value={pb.id} className="text-xs">
+                  {pb.name}
+                  {pb.isDefault ? " (Default)" : ""}
+                </SelectItem>
+              ))}
+              {defaultPlaybook && (
+                <SelectItem value="none" className="text-xs">
+                  MAST Default (Standard)
+                </SelectItem>
+              )}
+            </SelectContent>
+          </Select>
         </div>
       )}
 

@@ -22,6 +22,15 @@ vi.mock("@/hooks/use-mast-api", () => ({
   useSendLeadEmail: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRecordLeadActivity: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useLeadActivities: () => ({ data: h.activities, isLoading: false, isError: false }),
+  useLeadSafetyCheck: () => ({ data: { blocked: false, match: null, unsubscribeToken: null }, isLoading: false }),
+  useOutreachPacing: () => ({
+    data: {
+      email: { sentLast24h: 0, softLimit: 35, hardLimit: 50, level: "ok", message: null },
+      instagram: { last1h: 0, last24h: 0, hourlyLimit: 15, dailyLimit: 40, level: "ok", message: null },
+    },
+    isLoading: false,
+  }),
+  useAddSuppression: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 import { CenterWorkspace } from "../CenterWorkspace";

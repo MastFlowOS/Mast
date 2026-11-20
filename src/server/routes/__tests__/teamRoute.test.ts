@@ -28,32 +28,59 @@ describe("Team Workspaces & Seats (/v1/team)", () => {
   let invites: any[] = [];
   let seq = 1;
 
+  const authEmails: Record<string, string> = {
+    [ownerId]: "owner@agency.com",
+    [rep1Id]: "rep1@agency.com",
+    [rep2Id]: "rep2@agency.com",
+    [rep3Id]: "rep3@agency.com",
+  };
+
   function createMockDb() {
     return {
+      auth: {
+        admin: {
+          getUserById: async (uid: string) => ({
+            data: { user: authEmails[uid] ? { id: uid, email: authEmails[uid] } : null },
+            error: null,
+          }),
+        },
+      },
       from: (table: string) => {
         if (table === "profiles") {
-          const state: any = { eq: {}, inList: null };
+          const state: any = { eq: {}, inList: null, selectErr: null };
           const builder: any = {
-            select: () => builder,
+            select: (cols = "") => {
+              if (/\bemail\b|\bsubscription_status\b/.test(String(cols))) {
+                state.selectErr = { code: "42703", message: `Invalid column on public.profiles: ${cols}` };
+              }
+              return builder;
+            },
             eq: (col: string, val: any) => {
               state.eq[col] = val;
               return builder;
             },
             in: (_col: string, vals: any[]) => {
               state.inList = vals;
+              if (state.selectErr) return Promise.resolve({ data: null, error: state.selectErr });
               return Promise.resolve({
                 data: vals.map((id) => profiles[id]).filter(Boolean),
                 error: null,
               });
             },
-            single: async () => ({
-              data: profiles[state.eq.id] ?? null,
-              error: profiles[state.eq.id] ? null : { message: "Not found" },
-            }),
-            maybeSingle: async () => ({
-              data: profiles[state.eq.id] ?? null,
-              error: null,
-            }),
+            single: async () =>
+              state.selectErr
+                ? { data: null, error: state.selectErr }
+                : {
+                    data: profiles[state.eq.id] ?? null,
+                    error: profiles[state.eq.id] ? null : { message: "Not found" },
+                  },
+            maybeSingle: async () =>
+              state.selectErr
+                ? { data: null, error: state.selectErr }
+                : {
+                    data: profiles[state.eq.id] ?? null,
+                    error: null,
+                  },
           };
           return builder;
         }
@@ -204,10 +231,10 @@ describe("Team Workspaces & Seats (/v1/team)", () => {
 
   beforeEach(() => {
     profiles = {
-      [ownerId]: { id: ownerId, full_name: "Agency Owner", email: "owner@agency.com", subscription_plan: "pro" },
-      [rep1Id]: { id: rep1Id, full_name: "Rep One", email: "rep1@agency.com", subscription_plan: "free" },
-      [rep2Id]: { id: rep2Id, full_name: "Rep Two", email: "rep2@agency.com", subscription_plan: "free" },
-      [rep3Id]: { id: rep3Id, full_name: "Rep Three", email: "rep3@agency.com", subscription_plan: "free" },
+      [ownerId]: { id: ownerId, full_name: "Agency Owner", subscription_plan: "pro" },
+      [rep1Id]: { id: rep1Id, full_name: "Rep One", subscription_plan: "free" },
+      [rep2Id]: { id: rep2Id, full_name: "Rep Two", subscription_plan: "free" },
+      [rep3Id]: { id: rep3Id, full_name: "Rep Three", subscription_plan: "free" },
     };
     members = [];
     invites = [];

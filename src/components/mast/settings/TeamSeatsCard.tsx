@@ -115,7 +115,9 @@ export function TeamSeatsCard() {
     ? seatUsage.isUnlimitedSeats
       ? `${seatUsage.seatsReserved} seat${seatUsage.seatsReserved === 1 ? "" : "s"} · Unlimited`
       : `${seatUsage.seatsReserved} / ${seatUsage.seatLimit} seat${seatUsage.seatLimit === 1 ? "" : "s"} used`
-    : "Loading seats...";
+    : teamQuery.isError
+      ? "Unavailable"
+      : "Loading seats...";
 
   return (
     <div className="bg-card border border-border/60 rounded-2xl p-6 shadow-sm space-y-5">
@@ -132,10 +134,29 @@ export function TeamSeatsCard() {
           </div>
         </div>
 
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-300 border border-blue-500/25 self-start sm:self-auto">
+        <div
+          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border self-start sm:self-auto ${
+            teamQuery.isError
+              ? "bg-destructive/10 text-destructive border-destructive/25"
+              : "bg-blue-500/10 text-blue-300 border-blue-500/25"
+          }`}
+        >
           <span>{seatBadgeText}</span>
         </div>
       </div>
+
+      {teamQuery.isError && !team && (
+        <p className="text-xs text-destructive">
+          {(teamQuery.error as Error | null)?.message || "Could not load team seats."}{" "}
+          <button
+            type="button"
+            className="underline cursor-pointer"
+            onClick={() => teamQuery.refetch()}
+          >
+            Retry
+          </button>
+        </p>
+      )}
 
       {/* Incoming invites addressed to the signed-in user */}
       {team && team.incomingInvites.length > 0 && (

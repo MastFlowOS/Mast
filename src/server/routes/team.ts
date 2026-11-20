@@ -35,12 +35,35 @@ const UpdateMemberRoleSchema = z.object({
   role: z.enum(["admin", "member"]),
 });
 
+async function resolveAuthEmailsByIds(userIds: string[], db: any): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const adminApi = db?.auth?.admin;
+  if (!adminApi || typeof adminApi.getUserById !== "function" || userIds.length === 0) {
+    return map;
+  }
+  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+  await Promise.all(
+    uniqueIds.map(async (uid) => {
+      try {
+        const res = await adminApi.getUserById(uid);
+        const email = res?.data?.user?.email;
+        if (typeof email === "string" && email.trim()) {
+          map.set(String(uid), email.trim());
+        }
+      } catch {
+        // Non-fatal: email lookup is best-effort display metadata
+      }
+    }),
+  );
+  return map;
+}
+
 async function loadWorkspaceSnapshot(ownerId: string, db: any) {
   const [{ data: ownerProfile, error: ownerErr }, { data: memberRows, error: memErr }, { data: inviteRows, error: invErr }] =
     await Promise.all([
       db
         .from("profiles")
-        .select("id, full_name, email, subscription_plan")
+        .select("id, full_name, subscription_plan")
         .eq("id", ownerId)
         .single(),
       db
@@ -67,26 +90,28 @@ async function loadWorkspaceSnapshot(ownerId: string, db: any) {
     (inv: any) => !inv.expires_at || String(inv.expires_at) > nowIso,
   );
 
-  let memberProfilesById = new Map<string, { full_name?: string | null; email?: string | null }>();
-  if (activeMembers.length > 0) {
-    const memberIds = activeMembers.map((m: any) => m.member_id);
-    const { data: profiles } = await db
-      .from("profiles")
-      .select("id, full_name, email")
-      .in("id", memberIds);
-    for (const p of profiles ?? []) {
-      memberProfilesById.set(String(p.id), p);
-    }
+  const memberIds = activeMembers.map((m: any) => String(m.member_id));
+  const [memberProfilesRes, authEmails] = await Promise.all([
+    memberIds.length > 0
+      ? db.from("profiles").select("id, full_name").in("id", memberIds)
+      : Promise.resolve({ data: [] }),
+    resolveAuthEmailsByIds([ownerId, ...memberIds], db),
+  ]);
+
+  const memberProfilesById = new Map<string, { full_name?: string | null; email?: string | null }>();
+  for (const p of memberProfilesRes?.data ?? []) {
+    memberProfilesById.set(String(p.id), p);
   }
 
   const members = activeMembers.map((m: any) => {
-    const prof = memberProfilesById.get(String(m.member_id));
+    const uid = String(m.member_id);
+    const prof = memberProfilesById.get(uid);
     return {
       id: m.id,
       userId: m.member_id,
       role: m.role,
       fullName: prof?.full_name ?? null,
-      email: prof?.email ?? null,
+      email: authEmails.get(uid) ?? prof?.email ?? null,
       joinedAt: m.created_at,
     };
   });
@@ -110,7 +135,7 @@ async function loadWorkspaceSnapshot(ownerId: string, db: any) {
     owner: {
       userId: ownerId,
       fullName: ownerProfile?.full_name ?? null,
-      email: ownerProfile?.email ?? null,
+      email: authEmails.get(String(ownerId)) ?? ownerProfile?.email ?? null,
       plan: seatUsage.plan,
     },
     members,
@@ -129,6 +154,9 @@ teamRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
     const db = teamDeps.db;
     const ctx = await teamDeps.resolveWorkspaceContext(userId, db);
     const snapshot = await loadWorkspaceSnapshot(ctx.workspaceOwnerId, db);
+    if (!snapshot.owner.email && ctx.workspaceOwnerId === userId && req.user?.email) {
+      snapshot.owner.email = req.user.email;
+    }
 
     let incomingInvites: any[] = [];
     if (req.user?.email) {
@@ -142,21 +170,22 @@ teamRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
         .order("created_at", { ascending: false });
 
       if (Array.isArray(myInvites) && myInvites.length > 0) {
-        const ownerIds = Array.from(new Set(myInvites.map((i: any) => i.owner_id)));
-        const { data: owners } = await db
-          .from("profiles")
-          .select("id, full_name, email")
-          .in("id", ownerIds);
+        const ownerIds = Array.from(new Set(myInvites.map((i: any) => String(i.owner_id))));
+        const [{ data: owners }, ownerEmails] = await Promise.all([
+          db.from("profiles").select("id, full_name").in("id", ownerIds),
+          resolveAuthEmailsByIds(ownerIds, db),
+        ]);
         const ownersMap = new Map((owners ?? []).map((o: any) => [String(o.id), o]));
         incomingInvites = myInvites.map((i: any) => {
-          const owner = ownersMap.get(String(i.owner_id)) as any;
+          const ownerIdKey = String(i.owner_id);
+          const owner = ownersMap.get(ownerIdKey) as any;
           return {
             id: i.id,
             token: i.token,
             role: i.role,
             expiresAt: i.expires_at,
             ownerName: owner?.full_name ?? null,
-            ownerEmail: owner?.email ?? null,
+            ownerEmail: ownerEmails.get(ownerIdKey) ?? owner?.email ?? null,
           };
         });
       }
@@ -361,12 +390,9 @@ teamRouter.post("/invites/accept", requireAuth, writeLimiter, async (req, res, n
     // Verify signed-in email matches invited email
     let callerEmail = req.user?.email ? normalizeInviteEmail(req.user.email) : "";
     if (!callerEmail) {
-      const { data: callerProfile } = await db
-        .from("profiles")
-        .select("email")
-        .eq("id", userId)
-        .maybeSingle();
-      callerEmail = callerProfile?.email ? normalizeInviteEmail(callerProfile.email) : "";
+      const authLookup = await resolveAuthEmailsByIds([userId], db);
+      const foundEmail = authLookup.get(String(userId));
+      callerEmail = foundEmail ? normalizeInviteEmail(foundEmail) : "";
     }
     if (!callerEmail || callerEmail !== normalizeInviteEmail(invite.invited_email)) {
       return res.status(403).json({

@@ -23,13 +23,13 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
     const [{ data: actorProfile, error: actorErr }, ownerQuery] = await Promise.all([
       supabaseAdmin
         .from("profiles")
-        .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
+        .select("full_name, subscription_plan, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
         .eq("id", actorUserId)
         .single(),
       billingUserId !== actorUserId
         ? supabaseAdmin
             .from("profiles")
-            .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
+            .select("full_name, subscription_plan, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
             .eq("id", billingUserId)
             .single()
         : Promise.resolve({ data: null, error: null }),
@@ -51,9 +51,9 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
       user: {
         id: actorUserId,
         fullName: actorProfile?.full_name ?? "",
-        email: actorProfile?.email ?? req.user!.email ?? "",
+        email: req.user!.email ?? "",
         plan: plan.id,
-        subscriptionStatus: profile?.subscription_status ?? "active",
+        subscriptionStatus: "active",
       },
       workspace: {
         ownerId: billingUserId,
@@ -62,7 +62,7 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
       },
       subscription: {
         plan: plan.id,
-        status: profile?.subscription_status ?? "active",
+        status: "active",
         pendingPlanChange: profile?.pending_plan_change ?? null,
       },
       credits: {

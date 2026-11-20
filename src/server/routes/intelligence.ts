@@ -17,6 +17,13 @@ import { buildPipelineSnapshot } from "../../lib/intelligenceContext.js";
 import { runEngineScore } from "../../scraperBridge/pythonBridge.js";
 import { type ProfessionSlug } from "../../scoring/professionWeights.js";
 import { professionSlugForLabel } from "../../lib/professions.js";
+import { resolveWorkspaceContext } from "../../lib/workspaceContext.js";
+import {
+  buildDeterministicInvestigation,
+  inspectWebsiteSnapshot,
+  type InvestigateLeadResult,
+  type LeadInvestigationContext,
+} from "../../lib/leadInvestigate.js";
 
 export const intelligenceRouter = Router();
 
@@ -66,11 +73,16 @@ function asEnum<T extends string>(value: unknown, allowed: readonly T[], fallbac
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-async function resolveUserPlanAndProfession(userId: string): Promise<{ plan: PlanId; professionSlug: ProfessionSlug | null }> {
+async function resolveUserPlanAndProfession(userId: string): Promise<{
+  plan: PlanId;
+  professionSlug: ProfessionSlug | null;
+  workspaceOwnerId: string;
+}> {
+  const ctx = await resolveWorkspaceContext(userId);
   const { data: profile, error } = await supabaseAdmin
     .from("profiles")
     .select("subscription_plan, settings")
-    .eq("id", userId)
+    .eq("id", ctx.workspaceOwnerId)
     .single();
   if (error) throw error;
 
@@ -78,7 +90,7 @@ async function resolveUserPlanAndProfession(userId: string): Promise<{ plan: Pla
   const focusAreaLabel = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
   const professionSlug = professionSlugForLabel(focusAreaLabel);
 
-  return { plan, professionSlug };
+  return { plan, professionSlug, workspaceOwnerId: ctx.workspaceOwnerId };
 }
 
 function isoWeekKey(d: Date): string {
@@ -113,7 +125,7 @@ intelligenceRouter.get("/status", requireAuth, (_req, res) => {
  */
 intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req, res, next) => {
   try {
-    const userId = req.user!.id;
+    const { workspaceOwnerId: userId, professionSlug: profileProfession } = await resolveUserPlanAndProfession(req.user!.id);
     const leadId = Number(req.params.leadId);
     if (!Number.isFinite(leadId)) {
       return res.status(400).json({ code: "invalid_lead_id", message: "leadId must be numeric." });
@@ -130,7 +142,7 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req,
       return res.status(404).json({ code: "not_found", message: "Lead has no linked business to explain (pre-Opportunity-Engine lead)." });
     }
 
-    const professionSlug = (lead.profession_slug as ProfessionSlug | null) ?? (await resolveUserPlanAndProfession(userId)).professionSlug;
+    const professionSlug = (lead.profession_slug as ProfessionSlug | null) ?? profileProfession;
     if (!professionSlug) {
       return res.status(400).json({ code: "no_profession", message: "Set a profession in onboarding/settings to see opportunity explanations." });
     }
@@ -179,7 +191,7 @@ intelligenceRouter.get("/explain/:leadId", requireAuth, readLimiter, async (req,
  */
 intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, res, next) => {
   try {
-    const userId = req.user!.id;
+    const { workspaceOwnerId: userId } = await resolveWorkspaceContext(req.user!.id);
     const leadId = Number(req.params.leadId);
     if (!Number.isFinite(leadId)) {
       return res.status(400).json({ code: "invalid_lead_id", message: "leadId must be numeric." });
@@ -244,8 +256,7 @@ intelligenceRouter.get("/trust/:leadId", requireAuth, readLimiter, async (req, r
 intelligenceRouter.get("/opportunities/:businessId", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const routeStart = Date.now();
-    const userId = req.user!.id;
-    const { plan, professionSlug } = await resolveUserPlanAndProfession(userId);
+    const { plan, professionSlug, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
 
     if (!canUseAiFeature(plan, "opportunityInsights")) {
       return res.status(403).json({ code: "plan_restricted", message: "AI Opportunity Insights requires a Pro or Premium plan." });
@@ -400,8 +411,7 @@ intelligenceRouter.get("/opportunities/:businessId", requireAuth, readLimiter, a
 intelligenceRouter.get("/briefing", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const routeStart = Date.now();
-    const userId = req.user!.id;
-    const { plan } = await resolveUserPlanAndProfession(userId);
+    const { plan, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
 
     if (!canUseAiFeature(plan, "executiveBriefings")) {
       return res.status(403).json({ code: "plan_restricted", message: "AI Executive Briefings require a Pro or Premium plan." });
@@ -499,8 +509,7 @@ intelligenceRouter.get("/briefing", requireAuth, readLimiter, async (req, res, n
 intelligenceRouter.get("/weekly", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const routeStart = Date.now();
-    const userId = req.user!.id;
-    const { plan } = await resolveUserPlanAndProfession(userId);
+    const { plan, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
 
     if (!canUseAiFeature(plan, "weeklyIntelligence")) {
       return res.status(403).json({ code: "plan_restricted", message: "Weekly Intelligence requires a Pro or Premium plan." });
@@ -599,8 +608,7 @@ intelligenceRouter.get("/weekly", requireAuth, readLimiter, async (req, res, nex
 intelligenceRouter.get("/coaching", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const routeStart = Date.now();
-    const userId = req.user!.id;
-    const { plan } = await resolveUserPlanAndProfession(userId);
+    const { plan, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
 
     if (!canUseAiFeature(plan, "pipelineCoaching")) {
       return res.status(403).json({ code: "plan_restricted", message: "AI Pipeline Coaching requires a Pro or Premium plan." });
@@ -707,8 +715,7 @@ intelligenceRouter.get("/coaching", requireAuth, readLimiter, async (req, res, n
 intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const routeStart = Date.now();
-    const userId = req.user!.id;
-    const { plan } = await resolveUserPlanAndProfession(userId);
+    const { plan, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
 
     if (!canUseAiFeature(plan, "discoverOverview")) {
       return res.status(403).json({ code: "plan_restricted", message: "Discover AI Overview requires a Pro or Premium plan." });
@@ -953,8 +960,7 @@ intelligenceRouter.get("/discover-overview", requireAuth, readLimiter, async (re
 intelligenceRouter.get("/mission-coach", requireAuth, readLimiter, async (req, res, next) => {
   try {
     const routeStart = Date.now();
-    const userId = req.user!.id;
-    const { plan } = await resolveUserPlanAndProfession(userId);
+    const { plan, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
 
     if (!canUseAiFeature(plan, "missionCoach")) {
       return res.status(403).json({ code: "plan_restricted", message: "Mission AI Coach requires a Pro or Premium plan." });
@@ -1170,6 +1176,224 @@ intelligenceRouter.get("/mission-coach", requireAuth, readLimiter, async (req, r
     });
 
     res.json({ ...coaching, generatedAt, cached: false });
+  } catch (err) {
+    next(err);
+  }
+});
+
+export const investigateDeps = {
+  inspectWebsite: inspectWebsiteSnapshot,
+};
+
+const MAX_INVESTIGATE_QUESTION_LENGTH = 500;
+
+/**
+ * POST /v1/intelligence/investigate/:leadId
+ *
+ * Answers a specific pre-outreach research question about a lead using:
+ *   1. Verified lead + business + health + activity data in Postgres
+ *   2. A fast, SSRF-safe live homepage signal check (CMS/tech, booking tools,
+ *      SSL/meta, contact/owner clues) when a website is present
+ *   3. Optional AI synthesis (Premium `advancedResearch`) strictly grounded
+ *      in the collected facts, with deterministic fallback for all plans
+ */
+intelligenceRouter.post("/investigate/:leadId", requireAuth, readLimiter, async (req, res, next) => {
+  try {
+    const routeStart = Date.now();
+    const { plan, professionSlug: profileProfession, workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId) || leadId <= 0) {
+      return res.status(400).json({ code: "invalid_lead_id", message: "leadId must be numeric." });
+    }
+
+    const rawQuestion = req.body?.question;
+    if (typeof rawQuestion !== "string" || !rawQuestion.trim()) {
+      return res.status(400).json({ code: "invalid_question", message: "A non-empty research question is required." });
+    }
+    const question = rawQuestion.trim().slice(0, MAX_INVESTIGATE_QUESTION_LENGTH);
+
+    const { data: lead, error: leadError } = await supabaseAdmin
+      .from("leads")
+      .select(
+        "id, business_id, profession_slug, opportunity_score, business_name, niche, location, website, email, phone, instagram_handle, linkedin_handle, status, ig_followers, ig_bio, ig_last_post",
+      )
+      .eq("id", leadId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (leadError) throw leadError;
+    if (!lead) {
+      return res.status(404).json({ code: "not_found", message: "Lead not found or access denied." });
+    }
+
+    const professionSlug = (lead.profession_slug as ProfessionSlug | null) ?? profileProfession;
+
+    let business: Record<string, any> | null = null;
+    let healthScore: { score: number; breakdown: Record<string, unknown> | null } | null = null;
+    let explanation: LeadInvestigationContext["explanation"] = null;
+
+    if (lead.business_id) {
+      const [{ data: bizRow }, { data: healthRow }] = await Promise.all([
+        supabaseAdmin
+          .from("businesses")
+          .select(
+            "id, category, address, website, email, phone, instagram, facebook, linkedin, reviews_count, reviews_rating, has_photos, website_is_weak, ssl_valid, load_time_ms, seo, blog, confidence, last_verified_at, is_disqualified, disqualify_reason, signals",
+          )
+          .eq("id", lead.business_id)
+          .maybeSingle(),
+        supabaseAdmin
+          .from("business_health_scores")
+          .select("health_score, breakdown")
+          .eq("business_id", lead.business_id)
+          .maybeSingle(),
+      ]);
+      business = bizRow ?? null;
+      if (healthRow) {
+        healthScore = {
+          score: Number(healthRow.health_score ?? 0),
+          breakdown: (healthRow.breakdown as Record<string, unknown> | null) ?? null,
+        };
+      }
+
+      if (business && professionSlug) {
+        try {
+          const engineResult = await runEngineScore({
+            ...business,
+            id: lead.business_id,
+            ...(business.signals != null && typeof business.signals === "object"
+              ? (business.signals as Record<string, unknown>)
+              : {}),
+          });
+          const ps = engineResult.profession_scores?.[professionSlug];
+          explanation = {
+            score: ps?.score ?? 0,
+            summary: ps?.summary ?? "",
+            reasons: (ps?.reasons ?? []) as any[],
+          };
+        } catch {
+          // Non-fatal: proceed without engine breakdown
+        }
+      }
+    }
+
+    const { data: activityRows } = await supabaseAdmin
+      .from("lead_activities")
+      .select("type, channel, content, created_at")
+      .eq("lead_id", leadId)
+      .order("created_at", { ascending: false })
+      .limit(5);
+
+    const recentActivitySummary = Array.isArray(activityRows)
+      ? activityRows
+          .map((a: any) => `${a.type}${a.channel ? ` (${a.channel})` : ""}: ${String(a.content ?? "").slice(0, 140)}`)
+          .filter(Boolean)
+      : [];
+
+    const websiteToCheck = (lead.website as string | null) || (business?.website as string | null) || null;
+    const websiteSnapshot = await investigateDeps.inspectWebsite(websiteToCheck);
+
+    const context: LeadInvestigationContext = {
+      lead: {
+        id: Number(lead.id),
+        businessName: String(lead.business_name ?? "Unknown Business"),
+        niche: lead.niche ?? null,
+        location: lead.location ?? null,
+        website: lead.website ?? null,
+        email: lead.email ?? null,
+        phone: lead.phone ?? null,
+        instagramHandle: lead.instagram_handle ?? null,
+        linkedinHandle: lead.linkedin_handle ?? null,
+        opportunityScore: lead.opportunity_score ?? null,
+        status: String(lead.status ?? "new"),
+        igFollowers: lead.ig_followers ?? null,
+        igBio: lead.ig_bio ?? null,
+        igLastPost: lead.ig_last_post ?? null,
+      },
+      business: business
+        ? {
+            id: String(business.id),
+            category: business.category ?? null,
+            address: business.address ?? null,
+            website: business.website ?? null,
+            email: business.email ?? null,
+            phone: business.phone ?? null,
+            instagram: business.instagram ?? null,
+            facebook: business.facebook ?? null,
+            linkedin: business.linkedin ?? null,
+            reviewsCount: business.reviews_count ?? null,
+            reviewsRating: business.reviews_rating ?? null,
+            hasPhotos: business.has_photos ?? null,
+            websiteIsWeak: business.website_is_weak ?? null,
+            sslValid: business.ssl_valid ?? null,
+            loadTimeMs: business.load_time_ms ?? null,
+            seo: business.seo ?? null,
+            blog: business.blog ?? null,
+            confidence: business.confidence ?? null,
+            lastVerifiedAt: business.last_verified_at ?? null,
+            isDisqualified: Boolean(business.is_disqualified),
+            disqualifyReason: business.disqualify_reason ?? null,
+            signals: (business.signals as Record<string, unknown>) ?? {},
+          }
+        : null,
+      healthScore,
+      explanation,
+      recentActivitySummary,
+      websiteSnapshot,
+    };
+
+    const deterministic = buildDeterministicInvestigation(question, context);
+
+    if (aiEnabled() && canUseAiFeature(plan, "advancedResearch")) {
+      if (!checkAiGenerationRateLimit(req, res)) {
+        return;
+      }
+      try {
+        const aiResult = await generateJSON<{
+          answer: string;
+          confidence: "high" | "medium" | "low";
+          evidence: string[];
+          gaps: string[];
+        }>({
+          system:
+            "You are MAST's Pre-Outreach Research Analyst. Answer the user's specific question about a business " +
+            "using ONLY the verified database telemetry and live homepage snapshot provided in the JSON input. " +
+            "Never invent owner names, revenue figures, broken links, or tools that are not explicitly present in the input. " +
+            "If the answer is not verifiable from the supplied facts, state clearly what is known and what remains unverified. " +
+            "Never use em dashes ('—' or '–'). " +
+            "Respond with ONLY a raw JSON object: " +
+            '{"answer": string (2-4 clear sentences directly answering the question), ' +
+            '"confidence": "high" | "medium" | "low", ' +
+            '"evidence": string[] (2-6 short factual bullets from the input), ' +
+            '"gaps": string[] (0-3 short notes on missing/unverified details)}.',
+          user: JSON.stringify({ question, context }),
+          feature: "advanced_research",
+          contextPrepMs: Date.now() - routeStart,
+          maxTokens: 700,
+          timeoutMs: 20_000,
+          tier: "pro",
+        });
+
+        const cleanAnswer = asString(aiResult.answer, deterministic.answer).replace(/[—–]/g, " - ");
+        const cleanEvidence = asStringArray(aiResult.evidence).map((s) => s.replace(/[—–]/g, " - "));
+        const cleanGaps = asStringArray(aiResult.gaps).map((s) => s.replace(/[—–]/g, " - "));
+
+        const responsePayload: InvestigateLeadResult = {
+          question,
+          answer: cleanAnswer,
+          mode: "ai",
+          confidence: asEnum(aiResult.confidence, ["high", "medium", "low"] as const, deterministic.confidence),
+          evidence: cleanEvidence.length > 0 ? cleanEvidence : deterministic.evidence,
+          gaps: cleanGaps.length > 0 ? cleanGaps : deterministic.gaps,
+          websiteSnapshot,
+          checkedAt: new Date().toISOString(),
+        };
+        return res.json(responsePayload);
+      } catch (aiErr) {
+        console.warn("[intelligence] investigate AI synthesis failed, returning deterministic result:", aiErr);
+      }
+    }
+
+    return res.json(deterministic);
   } catch (err) {
     next(err);
   }

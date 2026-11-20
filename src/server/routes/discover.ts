@@ -11,6 +11,7 @@ import { enqueueDiscoveryPlan } from "../../discovery/planner.js";
 import { terminateRequest } from "../../discovery/requestLifecycle.js";
 import { publishDiscoveryLiveEvent, discoveryFailedEvent } from "../../discovery/liveDiscoveryEvent.js";
 import { resolveBusinessLogo } from "../lib/businessLogoScraper.js";
+import { resolveWorkspaceContext } from "../../lib/workspaceContext.js";
 
 export const discoverRouter = Router();
 
@@ -142,7 +143,7 @@ export const DiscoverRequestSchema = z.object({
  */
 discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) => {
   try {
-    const userId = req.user!.id;
+    const { workspaceOwnerId: userId } = await resolveWorkspaceContext(req.user!.id);
     const body = DiscoverRequestSchema.parse(req.body);
 
     // Resolve current usage state atomically (reset applied if a rolling
@@ -498,7 +499,7 @@ discoverRouter.post("/", requireAuth, discoverLimiter, async (req, res, next) =>
  */
 discoverRouter.post("/:jobId/cancel", requireAuth, cancelLimiter, async (req, res, next) => {
   try {
-    const userId = req.user!.id;
+    const { workspaceOwnerId: userId } = await resolveWorkspaceContext(req.user!.id);
     const { jobId } = req.params;
 
     const { data: job, error: fetchError } = await supabaseAdmin

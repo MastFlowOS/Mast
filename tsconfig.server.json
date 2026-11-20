@@ -25,6 +25,7 @@
     "src/server/routes/intelligence.ts",
     "src/server/routes/outreach.ts",
     "src/server/routes/inbox.ts",
+    "src/server/routes/team.ts",
     "src/server/routes/observability.ts",
     "src/lib/queue.ts",
     "src/lib/supabaseAdmin.ts",
@@ -41,6 +42,9 @@
     "src/lib/replyTriage.ts",
     "src/lib/replyIngestion.ts",
     "src/lib/imapSync.ts",
+    "src/lib/leadInvestigate.ts",
+    "src/lib/teamSeats.ts",
+    "src/lib/workspaceContext.ts",
     "src/jobs/**/*.ts",
     "src/scraperBridge/**/*.ts",
     "src/scoring/**/*.ts"

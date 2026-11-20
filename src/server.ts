@@ -14,6 +14,7 @@ import { discoverRouter } from "./server/routes/discover.js";
 import { intelligenceRouter } from "./server/routes/intelligence.js";
 import { outreachRouter } from "./server/routes/outreach.js";
 import { inboxRouter } from "./server/routes/inbox.js";
+import { teamRouter } from "./server/routes/team.js";
 import { observabilityRouter } from "./server/routes/observability.js";
 import { desktopRouter } from "./server/routes/desktop.js";
 import { closePersistentEnrichmentWorkerGraceful, persistentEnrichmentBridge } from "./scraperBridge/pythonBridge.js";
@@ -121,6 +122,7 @@ app.use("/v1/desktop", desktopRouter);
 app.use("/v1/intelligence", intelligenceRouter);
 app.use("/v1/outreach", outreachRouter);
 app.use("/v1/inbox", inboxRouter);
+app.use("/v1/team", teamRouter);
 app.use("/v1/observability", observabilityRouter);
 
 

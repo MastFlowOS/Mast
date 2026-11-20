@@ -1012,7 +1012,7 @@ const plans = [
       "AI Executive Briefings",
       "Weekly Intelligence",
       "AI Opportunity Insights",
-      "Unlimited Team Seats",
+      "7 Team Seats",
     ],
     cta: "Contact Sales",
     popular: false,

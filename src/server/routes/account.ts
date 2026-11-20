@@ -3,6 +3,7 @@ import { requireAuth } from "../../middleware/auth.js";
 import { createRateLimiter } from "../../middleware/rateLimit.js";
 import { supabaseAdmin } from "../../lib/supabaseAdmin.js";
 import { getPlan, PLANS, type PlanId } from "../../config/plans.js";
+import { resolveWorkspaceContext } from "../../lib/workspaceContext.js";
 
 function isPlanId(val: string): val is PlanId {
   return Object.prototype.hasOwnProperty.call(PLANS, val);
@@ -15,16 +16,29 @@ const readLimiter = createRateLimiter({ windowMs: 60_000, max: 120 });
 
 accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
   try {
-    const userId = req.user!.id;
+    const actorUserId = req.user!.id;
+    const workspaceCtx = await resolveWorkspaceContext(actorUserId);
+    const billingUserId = workspaceCtx.workspaceOwnerId;
 
-    const { data: profile, error } = await supabaseAdmin
-      .from("profiles")
-      .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
-      .eq("id", userId)
-      .single();
+    const [{ data: actorProfile, error: actorErr }, ownerQuery] = await Promise.all([
+      supabaseAdmin
+        .from("profiles")
+        .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
+        .eq("id", actorUserId)
+        .single(),
+      billingUserId !== actorUserId
+        ? supabaseAdmin
+            .from("profiles")
+            .select("full_name, email, subscription_plan, subscription_status, daily_leads_used, monthly_leads_used, pending_plan_change, bonus_credits, daily_limit_bonus")
+            .eq("id", billingUserId)
+            .single()
+        : Promise.resolve({ data: null, error: null }),
+    ]);
 
-    if (error) throw error;
+    if (actorErr) throw actorErr;
+    if (ownerQuery.error) throw ownerQuery.error;
 
+    const profile = ownerQuery.data ?? actorProfile;
     const plan = getPlan(profile?.subscription_plan);
     const bonusCredits = Math.max(0, Number(profile?.bonus_credits ?? 0));
     const dailyLimitBonus = Math.max(0, Number(profile?.daily_limit_bonus ?? 0));
@@ -35,11 +49,16 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
 
     res.json({
       user: {
-        id: userId,
-        fullName: profile?.full_name ?? "",
-        email: profile?.email ?? req.user!.email ?? "",
+        id: actorUserId,
+        fullName: actorProfile?.full_name ?? "",
+        email: actorProfile?.email ?? req.user!.email ?? "",
         plan: plan.id,
         subscriptionStatus: profile?.subscription_status ?? "active",
+      },
+      workspace: {
+        ownerId: billingUserId,
+        role: workspaceCtx.role,
+        isTeamMember: workspaceCtx.isTeamMember,
       },
       subscription: {
         plan: plan.id,
@@ -84,6 +103,15 @@ accountRouter.get("/", requireAuth, readLimiter, async (req, res, next) => {
 accountRouter.post("/subscription", requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
+    const workspaceCtx = await resolveWorkspaceContext(userId);
+    if (workspaceCtx.isTeamMember) {
+      return res.status(403).json({
+        error: "Only the workspace owner can change the subscription plan.",
+        message: "Only the workspace owner can change the subscription plan.",
+        code: "workspace_owner_required",
+      });
+    }
+
     const body = req.body ?? {};
     const targetPlan = typeof body.plan === "string" ? body.plan.toLowerCase().trim() : "";
 
@@ -149,4 +177,3 @@ accountRouter.post("/subscription", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
-

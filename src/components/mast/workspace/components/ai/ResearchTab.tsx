@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Search,
   Building2,
@@ -16,12 +16,18 @@ import {
   TrendingUp,
   Activity,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import type { Lead } from "@/lib/api";
-import { useOpportunityExplanation, useLeadTrust, useSettings } from "@/hooks/use-mast-api";
+import type { InvestigateLeadResult, Lead } from "@/lib/api";
+import {
+  useOpportunityExplanation,
+  useLeadTrust,
+  useSettings,
+  useInvestigateLead,
+} from "@/hooks/use-mast-api";
 import { leadNicheDisplay } from "@/lib/lead-workspace";
 import { openExternalPopup } from "@/lib/externalPopup";
 
@@ -35,17 +41,31 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
   const { data: explanation, isLoading: explanationLoading } = useOpportunityExplanation(lead.id);
   const { data: trust, isLoading: trustLoading } = useLeadTrust(lead.id);
   const { data: settings } = useSettings();
+  const investigate = useInvestigateLead();
 
-  const [hasQueried, setHasQueried] = useState(false);
+  const [investigationResult, setInvestigationResult] = useState<InvestigateLeadResult | null>(null);
+
+  useEffect(() => {
+    setInvestigationResult(null);
+  }, [lead.id]);
 
   const nicheLabel = leadNicheDisplay(lead.niche);
   const score = lead.opportunityScore ?? explanation?.score ?? null;
 
+  const runInvestigation = async (questionText: string) => {
+    const trimmed = questionText.trim();
+    if (!trimmed || investigate.isPending) return;
+    try {
+      const res = await investigate.mutateAsync({ leadId: lead.id, question: trimmed });
+      setInvestigationResult(res);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not run investigation");
+    }
+  };
+
   const handleInvestigate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!researchQuestion.trim()) return;
-    setHasQueried(true);
-    toast.info("Live web crawling is unavailable on this deployment. Stored intelligence is displayed below.");
+    void runInvestigation(researchQuestion);
   };
 
   // Structured discovery questions to evaluate before reaching out
@@ -89,25 +109,100 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
           />
           <Button
             type="submit"
-            disabled={!researchQuestion.trim()}
+            disabled={!researchQuestion.trim() || investigate.isPending}
             variant="outline"
-            className="h-8 px-2.5 text-xs border-border/60 bg-card/50 hover:bg-card text-foreground rounded-lg shrink-0"
+            className="h-8 px-2.5 text-xs border-border/60 bg-card/50 hover:bg-card text-foreground rounded-lg shrink-0 gap-1.5"
           >
-            Investigate
+            {investigate.isPending ? (
+              <>
+                <Loader2 className="size-3 animate-spin" />
+                Checking
+              </>
+            ) : (
+              "Investigate"
+            )}
           </Button>
         </div>
 
-        {/* Honest AI connection notice (compact) */}
-        <div className="p-2 rounded-lg border border-amber-500/25 bg-amber-500/5 text-[10px] space-y-0.5 text-foreground/90">
-          <div className="flex items-center gap-1.5 font-semibold text-amber-300">
-            <Info className="size-3 text-amber-400 shrink-0" />
-            <span>Telemetry &amp; Verified Data Only</span>
+        {/* Honest data-source notice */}
+        <div className="p-2 rounded-lg border border-indigo-500/20 bg-indigo-500/5 text-[10px] space-y-0.5 text-foreground/90">
+          <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
+            <Info className="size-3 text-indigo-400 shrink-0" />
+            <span>Verified Data &amp; Live Homepage Check</span>
           </div>
           <p className="text-muted-foreground leading-relaxed">
-            Live web crawling and autonomous web research are not configured on this server. All facts below come directly from MAST's verified database and scoring engine.
+            Answers combine MAST&apos;s verified business database, scoring telemetry, and a live homepage signal check when a website is listed.
           </p>
         </div>
       </form>
+
+      {/* Investigation Result */}
+      {investigationResult && (
+        <div
+          data-testid="investigation-result"
+          className="p-3 rounded-xl border border-indigo-500/35 bg-indigo-500/5 space-y-2.5"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300 flex items-center gap-1">
+              <Sparkles className="size-3 text-indigo-400" />
+              {investigationResult.mode === "ai" ? "AI Research Answer" : "Verified Data Answer"}
+            </span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-border/60 bg-background/50 text-muted-foreground capitalize">
+              {investigationResult.confidence} confidence
+            </span>
+          </div>
+
+          <p className="text-xs text-foreground leading-relaxed">{investigationResult.answer}</p>
+
+          {(investigationResult.websiteSnapshot.cmsOrTech.length > 0 ||
+            investigationResult.websiteSnapshot.bookingTools.length > 0 ||
+            investigationResult.websiteSnapshot.analyticsTools.length > 0) && (
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {[
+                ...investigationResult.websiteSnapshot.cmsOrTech,
+                ...investigationResult.websiteSnapshot.bookingTools,
+                ...investigationResult.websiteSnapshot.analyticsTools,
+              ].map((tag) => (
+                <span
+                  key={tag}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/25 text-indigo-300 font-medium"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {investigationResult.evidence.length > 0 && (
+            <div className="space-y-1 pt-1 border-t border-border/40">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400 block">
+                Evidence Found
+              </span>
+              <ul className="space-y-1 text-[11px] text-foreground/85">
+                {investigationResult.evidence.map((item, idx) => (
+                  <li key={idx} className="flex items-start gap-1.5">
+                    <CheckCircle2 className="size-3 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {investigationResult.gaps.length > 0 && (
+            <div className="space-y-1 pt-1 border-t border-border/40">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 block">
+                Not Verified Yet
+              </span>
+              <ul className="space-y-0.5 text-[10px] text-muted-foreground">
+                {investigationResult.gaps.map((gap, idx) => (
+                  <li key={idx}>• {gap}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 1. Business Overview Card */}
       <div className="p-3 rounded-xl border border-border/60 bg-card/40 space-y-2.5">
@@ -283,13 +378,19 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion }: Res
 
         <div className="space-y-1.5">
           {preOutreachQuestions.map((q, idx) => (
-            <div
+            <button
               key={idx}
-              className="p-2 rounded-lg border border-border/40 bg-card/25 text-[11px] text-foreground/80 leading-relaxed flex items-start gap-2"
+              type="button"
+              onClick={() => {
+                setResearchQuestion(q);
+                void runInvestigation(q);
+              }}
+              disabled={investigate.isPending}
+              className="w-full text-left p-2 rounded-lg border border-border/40 bg-card/25 hover:bg-card/50 hover:border-indigo-500/35 transition-colors text-[11px] text-foreground/80 leading-relaxed flex items-start gap-2"
             >
               <span className="text-[10px] font-mono text-muted-foreground mt-0.5 shrink-0">{idx + 1}.</span>
               <span>{q}</span>
-            </div>
+            </button>
           ))}
         </div>
       </div>

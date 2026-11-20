@@ -68,7 +68,7 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
       features = [
         "Highest AI Suite: Executive Briefings & Weekly Intelligence",
         "AI Opportunity Insights",
-        "Unlimited Team Seats",
+        "7 Team Seats",
         "Highest discovery limits (1,000 Opportunities / Day cap)",
         "Everything included",
       ];
@@ -96,7 +96,7 @@ function getPlanImpact(currentPlan: PlanId, targetPlan: PlanId): {
       features = [
         "Highest AI Suite (Executive Briefings & Weekly Intelligence)",
         "AI Opportunity Insights",
-        "Unlimited Team Seats (reduces to 3 Team Seats)",
+        "7 Team Seats (reduces to 3 Team Seats)",
       ];
     }
     return { type: "downgrade", features };

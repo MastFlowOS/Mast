@@ -1023,33 +1023,55 @@ async function recoverSessionOnAuthRejection(
 }
 
 async function enforceCapability(featureId: FeatureId): Promise<void> {
-  const userId = await requireUserId();
-  const { data: profile } = await supabase!
-    .from("profiles")
-    .select("subscription_plan")
-    .eq("id", userId)
-    .single();
-  const plan = getDevPlanOverride() || ((profile?.subscription_plan as PlanId) || "free");
+  const actorUserId = await requireUserId();
+  const workspaceOwnerId = await getWorkspaceOwnerId();
+  let plan: PlanId = "free";
+  if (workspaceOwnerId !== actorUserId) {
+    const account = await getAccount();
+    plan = getDevPlanOverride() || ((account.subscription.plan as PlanId) || "free");
+  } else {
+    const { data: profile } = await supabase!
+      .from("profiles")
+      .select("subscription_plan")
+      .eq("id", actorUserId)
+      .single();
+    plan = getDevPlanOverride() || ((profile?.subscription_plan as PlanId) || "free");
+  }
   const permissions = buildPermissionsManager(plan);
   if (!permissions.can(featureId)) {
     throw new ApiError(403, `Access denied: feature '${featureId}' is restricted under your plan.`, {});
   }
 }
 
-async function enforceTeamSeatLimit(): Promise<void> {
-  const userId = await requireUserId();
-  const { data: profile } = await supabase!
-    .from("profiles")
-    .select("subscription_plan")
-    .eq("id", userId)
-    .single();
-  const plan = getDevPlanOverride() || ((profile?.subscription_plan as PlanId) || "free");
+export async function enforceTeamSeatLimit(): Promise<void> {
+  const actorUserId = await requireUserId();
+  const workspaceOwnerId = await getWorkspaceOwnerId();
+  const account = await getAccount();
+  const plan = getDevPlanOverride() || ((account.subscription.plan as PlanId) || "free");
   const permissions = buildPermissionsManager(plan);
-  
-  // Query active team members (simulated as 1 since no multi-tenant workspace UI is present)
-  const currentMembersCount = 1;
-  if (currentMembersCount > permissions.limits.teamSeats) {
-    throw new ApiError(403, `Active team members exceed the limit of ${permissions.limits.teamSeats} seat(s) for your plan.`, {});
+  if (permissions.limits.isUnlimitedSeats) return;
+
+  let activeMembersCount = 0;
+  if (supabase) {
+    const { count, error } = await supabase
+      .from("workspace_members")
+      .select("id", { count: "exact", head: true })
+      .eq("owner_id", workspaceOwnerId)
+      .eq("status", "active");
+    if (!error && typeof count === "number") {
+      activeMembersCount = count;
+    } else if (workspaceOwnerId !== actorUserId) {
+      activeMembersCount = 1;
+    }
+  }
+
+  const currentSeatsCount = 1 + activeMembersCount;
+  if (currentSeatsCount > permissions.limits.teamSeats) {
+    throw new ApiError(
+      403,
+      `Active team members exceed the limit of ${permissions.limits.teamSeats} seat(s) for your plan.`,
+      {},
+    );
   }
 }
 
@@ -1141,10 +1163,54 @@ type ProfileCacheEntry = {
 
 let cachedProfileEntry: ProfileCacheEntry | null = null;
 let profileInFlight: { userId: string; promise: Promise<{ profile: any; activeProfile: any }> } | null = null;
+let cachedWorkspaceOwner: { userId: string; ownerId: string; fetchedAt: number } | null = null;
+let workspaceOwnerInFlight: { userId: string; promise: Promise<string> } | null = null;
 
 export function invalidateProfileCache() {
   cachedProfileEntry = null;
   profileInFlight = null;
+  cachedWorkspaceOwner = null;
+  workspaceOwnerInFlight = null;
+}
+
+export async function getWorkspaceOwnerId(): Promise<string> {
+  const userId = await requireUserId();
+  const now = Date.now();
+  if (
+    cachedWorkspaceOwner &&
+    cachedWorkspaceOwner.userId === userId &&
+    now - cachedWorkspaceOwner.fetchedAt < 30_000
+  ) {
+    return cachedWorkspaceOwner.ownerId;
+  }
+
+  if (workspaceOwnerInFlight && workspaceOwnerInFlight.userId === userId) {
+    return workspaceOwnerInFlight.promise;
+  }
+
+  const promise = (async () => {
+    try {
+      const { data, error } = await supabase!
+        .from("workspace_members")
+        .select("owner_id")
+        .eq("member_id", userId)
+        .eq("status", "active")
+        .maybeSingle();
+
+      const ownerId = !error && data?.owner_id ? String(data.owner_id) : userId;
+      cachedWorkspaceOwner = { userId, ownerId, fetchedAt: Date.now() };
+      return ownerId;
+    } catch {
+      return userId;
+    } finally {
+      if (workspaceOwnerInFlight?.userId === userId) {
+        workspaceOwnerInFlight = null;
+      }
+    }
+  })();
+
+  workspaceOwnerInFlight = { userId, promise };
+  return promise;
 }
 
 export async function fetchProfileWithDedup(userId: string): Promise<{ profile: any; activeProfile: any }> {
@@ -1234,12 +1300,32 @@ export async function getMe() {
     activeProfile = await checkAndResetUsage(profile);
   }
 
-  const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  let resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  let bonusCredits = Math.max(0, Number(activeProfile?.bonus_credits ?? 0));
+  let monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
+  let dailyUsed = activeProfile?.daily_leads_used ?? 0;
+  let pendingPlanChange: PlanId | null = (activeProfile?.pending_plan_change as PlanId | null) || null;
+
+  try {
+    const workspaceOwnerId = await getWorkspaceOwnerId();
+    if (workspaceOwnerId !== activeSession.user.id) {
+      const sharedAcc = await backendFetch<{
+        subscription: { plan: PlanId; pendingPlanChange: PlanId | null };
+        credits: { used: number; bonusCredits: number };
+        dailyUsage: { used: number };
+      }>("/v1/account");
+      resolvedPlan = getDevPlanOverride() || sharedAcc.subscription.plan || resolvedPlan;
+      bonusCredits = sharedAcc.credits.bonusCredits ?? bonusCredits;
+      monthlyUsed = sharedAcc.credits.used ?? monthlyUsed;
+      dailyUsed = sharedAcc.dailyUsage.used ?? dailyUsed;
+      pendingPlanChange = sharedAcc.subscription.pendingPlanChange ?? null;
+    }
+  } catch {
+    // Non-fatal fallback to user's own profile when backend is offline
+  }
+
   const permissions = buildPermissionsManager(resolvedPlan);
-  const bonusCredits = Math.max(0, Number(activeProfile?.bonus_credits ?? 0));
-  const dailyLimitBonus = Math.max(0, Number(activeProfile?.daily_limit_bonus ?? 0));
   const monthlyLimit = permissions.limits.monthlyOpportunities + bonusCredits;
-  const monthlyUsed = activeProfile?.monthly_leads_used ?? 0;
   const monthlyRemaining = Math.max(0, permissions.limits.monthlyOpportunities - monthlyUsed) + bonusCredits;
 
   const user: AuthUser = {
@@ -1253,10 +1339,10 @@ export async function getMe() {
     creditsRemaining: monthlyRemaining,
     emailConfirmed,
     monthlyLeadsUsed: monthlyUsed,
-    dailyLeadsUsed: activeProfile?.daily_leads_used ?? 0,
+    dailyLeadsUsed: dailyUsed,
     nextDailyReset: activeProfile?.next_daily_reset ?? null,
     nextMonthlyReset: activeProfile?.next_monthly_reset ?? null,
-    pendingPlanChange: (activeProfile?.pending_plan_change as PlanId) || null,
+    pendingPlanChange,
     workspaceStatus: (activeProfile?.settings as Record<string, any>)?.workspaceStatus || "active",
     onboardingCompleted: (activeProfile?.settings as Record<string, any>)?.onboardingCompleted === "true",
     // Phase 7: expose internal_role for ops dashboard gating (null for all regular users).
@@ -1390,6 +1476,28 @@ function buildAccountFromProfile(userId: string, activeProfile: any): Account {
 export async function getAccount(): Promise<Account> {
   const userId = await requireUserId();
   try {
+    const workspaceOwnerId = await getWorkspaceOwnerId();
+    if (workspaceOwnerId !== userId) {
+      const remote = await backendFetch<{
+        user: { id: string; fullName: string; email: string; plan: PlanId; subscriptionStatus: string };
+        subscription: { plan: PlanId; status: string; pendingPlanChange: PlanId | null };
+        credits: { limit: number; used: number; remaining: number; bonusCredits: number };
+        dailyUsage: { used: number; limit: number; remaining: number; bonus: number };
+        monthlyUsage: { used: number; limit: number; remaining: number };
+      }>("/v1/account");
+      const syntheticProfile = {
+        full_name: remote.user.fullName,
+        email: remote.user.email,
+        subscription_plan: remote.subscription.plan,
+        subscription_status: remote.subscription.status,
+        pending_plan_change: remote.subscription.pendingPlanChange,
+        bonus_credits: remote.credits.bonusCredits,
+        daily_limit_bonus: remote.dailyUsage.bonus,
+        daily_leads_used: remote.dailyUsage.used,
+        monthly_leads_used: remote.monthlyUsage.used,
+      };
+      return buildAccountFromProfile(userId, syntheticProfile);
+    }
     const { activeProfile } = await fetchProfileWithDedup(userId);
     return buildAccountFromProfile(userId, activeProfile);
   } catch (error: any) {
@@ -1427,7 +1535,7 @@ export async function updateSubscription(plan: PlanId): Promise<Account> {
 // ─── Leads (Supabase) ─────────────────────────────────────────────────────────
 
 export async function getLeads(params: Record<string, string | number | undefined> = {}): Promise<LeadsResponse> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   let query = supabase!.from("leads").select("*", { count: "exact" }).eq("user_id", userId);
 
   if (params.search) {
@@ -1454,7 +1562,7 @@ export async function getLeads(params: Record<string, string | number | undefine
 }
 
 export async function getLead(id: number | string): Promise<Lead> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { data, error } = await supabase!.from("leads").select("*").eq("id", id).eq("user_id", userId).single();
   if (error) throw new ApiError(404, "Lead not found", error);
   return dbRowToLead(data);
@@ -1480,7 +1588,7 @@ export async function createLead(body: CreateLeadBody): Promise<Lead> {
 }
 
 export async function updateLead(id: number, body: UpdateLeadBody): Promise<Lead> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
 
   // updateLead is the general-purpose lead data-access function: ordinary
   // CRM status changes, follow-up updates, notes/metadata updates, and
@@ -1496,7 +1604,7 @@ export async function updateLead(id: number, body: UpdateLeadBody): Promise<Lead
 }
 
 export async function deleteLead(id: number): Promise<void> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { error } = await supabase!.from("leads").delete().eq("id", id).eq("user_id", userId);
   if (error) throw new ApiError(500, error.message, error);
 }
@@ -1507,14 +1615,14 @@ export async function bulkUpdateLeads(body: { ids: number[]; updates: UpdateLead
 }
 
 export async function bulkDeleteLeads(body: { ids: number[] }): Promise<BulkDeleteResult> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { error } = await supabase!.from("leads").delete().in("id", body.ids).eq("user_id", userId);
   if (error) throw new ApiError(500, error.message, error);
   return { deleted: body.ids.length };
 }
 
 export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promise<BulkImportResult> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
 
   // ── Fetch ALL existing leads for this user to build the dedup index ──
   // We need the full set to ensure no duplicates slip through.
@@ -1625,24 +1733,26 @@ export async function bulkImportLeads(body: { leads: CreateLeadBody[] }): Promis
 // Lead generation is handled by the external Python backend.
 // When disconnected or during local operations, we validate limits and return mock leads.
 export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGenerationResponse> {
-  const userId = await requireUserId();
+  const actorUserId = await requireUserId();
+  const workspaceOwnerId = await getWorkspaceOwnerId();
 
-  // Client-side pre-flight check + lazy daily/monthly reset — reused as-is
-  // from the previous mock. This is a fast-fail / UX convenience only; the
-  // gateway re-checks the same limits server-side and is the authoritative
-  // enforcement (see mast-backend src/routes/discover.ts).
-  await UsageService.checkAllowance(userId, body.quantity);
-  const { data: profile, error: profileErr } = await supabase!.from("profiles").select("*").eq("id", userId).single();
-  if (profileErr) throw new ApiError(500, profileErr.message, profileErr);
-  const activeProfile = await checkAndResetUsage(profile);
-
-  // Channel/region restrictions — reused as-is from the mock. NOTE: this is
-  // a client-side pre-check only; the gateway (mast-backend) does not yet
-  // re-enforce these server-side (it enforces plan/credit/daily/monthly
-  // limits, but not per-channel or regional-search gating). Flagged as a
-  // gap in Phase 4 deliverables, not fixed here — it's a backend change,
-  // out of scope for "Discover integration."
-  const resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  let resolvedPlan: PlanId = "free";
+  if (workspaceOwnerId !== actorUserId) {
+    const account = await getAccount();
+    resolvedPlan = getDevPlanOverride() || ((account.subscription.plan as PlanId) || "free");
+    if (account.dailyUsage.remaining <= 0) {
+      throw new ApiError(429, "Daily opportunity limit reached", {});
+    }
+    if (account.monthlyUsage.remaining <= 0) {
+      throw new ApiError(429, "Monthly credit limit reached", {});
+    }
+  } else {
+    await UsageService.checkAllowance(actorUserId, body.quantity);
+    const { data: profile, error: profileErr } = await supabase!.from("profiles").select("*").eq("id", actorUserId).single();
+    if (profileErr) throw new ApiError(500, profileErr.message, profileErr);
+    const activeProfile = await checkAndResetUsage(profile);
+    resolvedPlan = getDevPlanOverride() || ((activeProfile?.subscription_plan as PlanId) || "free");
+  }
   const permissions = buildPermissionsManager(resolvedPlan);
 
   const requiredChannels: Record<string, FeatureId> = {
@@ -1686,7 +1796,14 @@ export async function generateLeads(body: LeadGenerationRequest): Promise<LeadGe
     }),
   });
 
-  const credits = await currentCreditsSnapshot(userId);
+  const credits =
+    workspaceOwnerId !== actorUserId
+      ? await getAccount().then((a) => ({
+          used: a.credits.used,
+          limit: a.credits.limit,
+          remaining: a.credits.remaining,
+        }))
+      : await currentCreditsSnapshot(actorUserId);
   const mode = backendModeToGenerationMode(backendResponse.mode);
 
   if (backendResponse.status === "queued") {
@@ -1924,10 +2041,50 @@ export async function getIntelligenceStatus(): Promise<IntelligenceStatusRespons
   return backendFetch<IntelligenceStatusResponse>("/v1/intelligence/status");
 }
 
+export type InvestigateWebsiteSnapshot = {
+  checked: boolean;
+  url: string | null;
+  finalUrl: string | null;
+  statusCode: number | null;
+  https: boolean;
+  title: string | null;
+  metaDescription: string | null;
+  cmsOrTech: string[];
+  bookingTools: string[];
+  analyticsTools: string[];
+  emailsFound: string[];
+  socialLinks: string[];
+  ownerHints: string[];
+  hasContactForm: boolean;
+  hasMobileViewport: boolean;
+  error: string | null;
+};
+
+export type InvestigateLeadResult = {
+  question: string;
+  answer: string;
+  mode: "ai" | "verified_data";
+  confidence: "high" | "medium" | "low";
+  evidence: string[];
+  gaps: string[];
+  websiteSnapshot: InvestigateWebsiteSnapshot;
+  checkedAt: string;
+};
+
+export async function investigateLead(
+  leadId: number | string,
+  question: string,
+): Promise<InvestigateLeadResult> {
+  return backendFetch<InvestigateLeadResult>(`/v1/intelligence/investigate/${leadId}`, {
+    method: "POST",
+    body: JSON.stringify({ question }),
+  });
+}
+
 // ─── Analytics (computed from Supabase leads) ─────────────────────────────────
 
 export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { data, error } = await supabase!.from("leads").select("status, follow_up_at, last_contacted_at, created_at").eq("user_id", userId);
   if (error) throw new ApiError(500, error.message, error);
 
@@ -1964,7 +2121,7 @@ export type MissionWeekStats = {
  * come from the lead's current status and when it last changed.
  */
 export async function getMissionWeekStats(): Promise<MissionWeekStats> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - 6);
@@ -2011,7 +2168,7 @@ export async function getMissionWeekStats(): Promise<MissionWeekStats> {
 }
 
 export async function getPipelineStats(): Promise<PipelineStat[]> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   await enforceCapability("pipeline");
   const { data, error } = await supabase!.from("leads").select("status").eq("user_id", userId);
   if (error) throw new ApiError(500, error.message, error);
@@ -2024,7 +2181,7 @@ export async function getPipelineStats(): Promise<PipelineStat[]> {
 }
 
 export async function getRecentActivity(): Promise<ActivityItem[]> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { data, error } = await supabase!
     .from("lead_activities")
     .select("id, type, content, leads(business_name), channel, created_at")
@@ -2058,7 +2215,7 @@ export async function getRecentActivity(): Promise<ActivityItem[]> {
  */
 export async function getStageActivity(leadIds: number[], limit = 5): Promise<StageActivityItem[]> {
   if (leadIds.length === 0) return [];
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const CHUNK = 100;
   const chunks: number[][] = [];
   for (let i = 0; i < leadIds.length; i += CHUNK) chunks.push(leadIds.slice(i, i + CHUNK));
@@ -2378,7 +2535,7 @@ export async function getDailyGoalEvidence(
 // ─── Lead Activities (Supabase) ───────────────────────────────────────────────
 
 export async function getLeadActivities(id: number | string): Promise<LeadActivity[]> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { data, error } = await supabase!
     .from("lead_activities")
     .select("*")
@@ -2408,7 +2565,7 @@ export async function createLeadActivity(
   id: number | string,
   body: Omit<LeadActivity, "id" | "leadId">,
 ): Promise<LeadActivity> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const row = {
     lead_id: Number(id),
     user_id: userId,
@@ -2436,7 +2593,7 @@ export async function createLeadActivity(
 // ─── Messages (Supabase lead_messages table, graceful fallback) ───────────────
 
 export async function getLeadMessages(id: number | string): Promise<Message[]> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const { data, error } = await supabase!
     .from("lead_messages")
     .select("*")
@@ -2471,7 +2628,7 @@ export async function createMessage(body: {
   externalMessageId?: string | null;
   metadata?: Record<string, unknown> | null;
 }): Promise<Message> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   const baseRow = {
     lead_id: body.leadId,
     user_id: userId,
@@ -2516,7 +2673,7 @@ export async function createMessage(body: {
 // ─── Follow-ups (Supabase lead_followups table, graceful fallback) ────────────
 
 export async function getLeadFollowups(id: number | string): Promise<Followup[]> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   await enforceCapability("mission");
   const { data, error } = await supabase!
     .from("lead_followups")
@@ -2531,7 +2688,7 @@ export async function getLeadFollowups(id: number | string): Promise<Followup[]>
 }
 
 export async function getFollowups(params: Record<string, string | number | undefined> = {}): Promise<FollowupWithLead[]> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   await enforceCapability("mission");
   let query = supabase!
     .from("lead_followups")
@@ -2577,7 +2734,7 @@ export async function getFollowups(params: Record<string, string | number | unde
 }
 
 export async function createFollowup(body: { leadId: number; channel: string; dueAt: string; notes?: string }): Promise<Followup> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   await enforceCapability("mission");
   const row = {
     lead_id: body.leadId,
@@ -2606,7 +2763,7 @@ export async function updateFollowup(id: number | string, body: {
   stepNumber?: number | null;
   currentStep?: string | null;
 }): Promise<Followup> {
-  const userId = await requireUserId();
+  const userId = await getWorkspaceOwnerId();
   await enforceCapability("mission");
   const row: Record<string, unknown> = {};
   if (body.status !== undefined) row.status = body.status;
@@ -3253,4 +3410,112 @@ export async function clearAllServerNotifications(): Promise<void> {
     .update({ dismissed_at: new Date().toISOString() })
     .eq("user_id", session.user.id)
     .is("dismissed_at", null);
+}
+
+// ─── Team Workspaces & Seats ─────────────────────────────────────────────────
+
+export type TeamMember = {
+  id: string;
+  userId: string;
+  role: "admin" | "member";
+  fullName: string | null;
+  email: string | null;
+  joinedAt: string;
+};
+
+export type TeamPendingInvite = {
+  id: string;
+  email: string;
+  role: "admin" | "member";
+  token: string;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export type IncomingTeamInvite = {
+  id: string;
+  token: string;
+  role: "admin" | "member";
+  expiresAt: string;
+  ownerName: string | null;
+  ownerEmail: string | null;
+};
+
+export type TeamSeatUsage = {
+  plan: PlanId;
+  seatLimit: number;
+  isUnlimitedSeats: boolean;
+  activeSeats: number;
+  pendingInvites: number;
+  seatsReserved: number;
+  seatsRemaining: number;
+  canInvite: boolean;
+};
+
+export type TeamWorkspaceResponse = {
+  myRole: "owner" | "admin" | "member";
+  isTeamMember: boolean;
+  workspaceOwnerId: string;
+  owner: {
+    userId: string;
+    fullName: string | null;
+    email: string | null;
+    plan: PlanId;
+  };
+  members: TeamMember[];
+  pendingInvites: TeamPendingInvite[];
+  seatUsage: TeamSeatUsage;
+  incomingInvites: IncomingTeamInvite[];
+};
+
+export async function getTeamWorkspace(): Promise<TeamWorkspaceResponse> {
+  return backendFetch<TeamWorkspaceResponse>("/v1/team");
+}
+
+export async function inviteTeamMember(body: {
+  email: string;
+  role?: "admin" | "member";
+}): Promise<{ invite: TeamPendingInvite; seatUsage: TeamSeatUsage }> {
+  return backendFetch("/v1/team/invites", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function revokeTeamInvite(inviteId: string): Promise<{ success: boolean }> {
+  return backendFetch(`/v1/team/invites/${inviteId}`, { method: "DELETE" });
+}
+
+export async function acceptTeamInvite(token: string): Promise<{
+  success: boolean;
+  workspaceOwnerId: string;
+  role: string;
+}> {
+  const res = await backendFetch<{ success: boolean; workspaceOwnerId: string; role: string }>(
+    "/v1/team/invites/accept",
+    {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    },
+  );
+  invalidateProfileCache();
+  return res;
+}
+
+export async function updateTeamMemberRole(
+  memberId: string,
+  role: "admin" | "member",
+): Promise<{ success: boolean }> {
+  return backendFetch(`/v1/team/members/${memberId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function removeTeamMember(memberId: string): Promise<{ success: boolean }> {
+  const res = await backendFetch<{ success: boolean }>(`/v1/team/members/${memberId}`, {
+    method: "DELETE",
+  });
+  invalidateProfileCache();
+  return res;
 }

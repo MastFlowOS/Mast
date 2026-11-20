@@ -81,6 +81,10 @@ export type PlanConfig = {
   /** Mirrors permissions.ts "regionalSearch" — false means localSearch only. */
   regionalSearch: boolean;
 
+  /** Mirrors permissions.ts PLAN_LIMITS.teamSeats (1 = owner only, 3 = Pro, 7 = Premium). */
+  teamSeats: number;
+  isUnlimitedSeats: boolean;
+
   /**
    * Maximum number of browser-backed tasks (discovery.task, enrich.website,
    * enrich.instagram) that can be in `running` state simultaneously for a
@@ -115,6 +119,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "limited",
     channels: { email: true, phone: true, instagram: false, website: false },
     regionalSearch: false,
+    teamSeats: 1,
+    isUnlimitedSeats: false,
     workerConcurrency: 2,
     priorityBand: { base: 0, ceiling: 9 },
   },
@@ -128,6 +134,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "limited",
     channels: { email: true, phone: true, instagram: true, website: false },
     regionalSearch: true,
+    teamSeats: 1,
+    isUnlimitedSeats: false,
     workerConcurrency: 4,
     priorityBand: { base: 10, ceiling: 19 },
   },
@@ -141,6 +149,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "standard",
     channels: { email: true, phone: true, instagram: true, website: true },
     regionalSearch: true,
+    teamSeats: 3,
+    isUnlimitedSeats: false,
     workerConcurrency: 8,
     priorityBand: { base: 20, ceiling: 29 },
   },
@@ -154,6 +164,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     aiAccess: "full",
     channels: { email: true, phone: true, instagram: true, website: true },
     regionalSearch: true,
+    teamSeats: 7,
+    isUnlimitedSeats: false,
     workerConcurrency: 16,
     priorityBand: { base: 30, ceiling: 39 },
   },

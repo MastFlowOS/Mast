@@ -83,8 +83,17 @@ import {
   getMissionCoach,
   type IntelligenceStatusResponse,
   getIntelligenceStatus,
+  type InvestigateLeadResult,
+  investigateLead,
   type OpsStats,
   type OpsHistoryEntry,
+  type TeamWorkspaceResponse,
+  getTeamWorkspace,
+  inviteTeamMember,
+  revokeTeamInvite,
+  acceptTeamInvite,
+  updateTeamMemberRole,
+  removeTeamMember,
 } from "@/lib/api";
 import { appendActivityToNotes, buildActivitiesFromLead, normalizeActivitiesPayload, type WorkspaceActivityInput } from "@/lib/lead-workspace";
 
@@ -118,6 +127,7 @@ export const queryKeys = {
   // Phase 7 — Observability
   opsStats: (rangeHours: number) => ["mast", "ops", "stats", rangeHours] as const,
   opsHistory: (rangeHours: number) => ["mast", "ops", "history", rangeHours] as const,
+  team: ["mast", "team"] as const,
 };
 
 const DEV_MOCK_USER: AuthUser = {
@@ -837,6 +847,12 @@ export function useIntelligenceStatus() {
   });
 }
 
+export function useInvestigateLead() {
+  return useMutation<InvestigateLeadResult, Error, { leadId: number | string; question: string }>({
+    mutationFn: ({ leadId, question }) => investigateLead(leadId, question),
+  });
+}
+
 // ─── Phase 7 — Observability / Ops Dashboard ────────────────────────────────
 
 /**
@@ -915,6 +931,69 @@ export function useDeleteInboxSettings() {
     mutationFn: deleteInboxSettings,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
+    },
+  });
+}
+
+// ─── Team Workspaces & Seats ─────────────────────────────────────────────────
+
+export function useTeamWorkspace(enabled = true) {
+  return useQuery<TeamWorkspaceResponse>({
+    queryKey: queryKeys.team,
+    queryFn: getTeamWorkspace,
+    enabled,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export function useInviteTeamMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: inviteTeamMember,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.team });
+    },
+  });
+}
+
+export function useRevokeTeamInvite() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: revokeTeamInvite,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.team });
+    },
+  });
+}
+
+export function useAcceptTeamInvite() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: acceptTeamInvite,
+    onSuccess: () => {
+      queryClient.invalidateQueries();
+    },
+  });
+}
+
+export function useUpdateTeamMemberRole() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, role }: { memberId: string; role: "admin" | "member" }) =>
+      updateTeamMemberRole(memberId, role),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.team });
+    },
+  });
+}
+
+export function useRemoveTeamMember() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: removeTeamMember,
+    onSuccess: () => {
+      queryClient.invalidateQueries();
     },
   });
 }

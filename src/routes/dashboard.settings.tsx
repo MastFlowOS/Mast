@@ -48,6 +48,7 @@ import { COUNTRIES, REGION_NAMES } from "@/lib/geo/countries";
 import { GLOBAL_SCOPE } from "@/lib/geo/scope";
 import { RegionMark, RegionOption } from "@/components/mast/discover/TargetRegionCard";
 import { ReplyObservationCard } from "@/components/mast/settings/ReplyObservationCard";
+import { TeamSeatsCard } from "@/components/mast/settings/TeamSeatsCard";
 import { AVATAR_OUTPUT_SIZE, clampPan, computeMinScale, computeSourceRect } from "@/lib/avatarCrop";
 
 export const Route = createFileRoute("/dashboard/settings")({
@@ -1087,14 +1088,6 @@ function SettingsPage() {
               checked={notifyOutreachReplies}
               onChange={setNotifyOutreachReplies}
             />
-            <NotificationRow
-              label="Weekly Summary"
-              desc="A weekly digest of your workspace activity and progress."
-              checked={false}
-              onChange={() => {}}
-              comingSoon
-              disabled
-            />
           </div>
         </SettingsCard>
 
@@ -1172,6 +1165,9 @@ function SettingsPage() {
           </div>
         </SettingsCard>
       </div>
+
+      {/* ── Row 4b: Team & Seats (Agency Workspaces) ────────────────────────── */}
+      <TeamSeatsCard />
 
       {/* ── Row 5: Danger Zone (Full Width) ─────────────────────────────────── */}
       <div className="border border-destructive/20 bg-card rounded-2xl p-6 shadow-sm">

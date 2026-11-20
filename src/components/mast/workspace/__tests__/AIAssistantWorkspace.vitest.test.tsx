@@ -8,6 +8,7 @@ import type { Lead } from "@/lib/api";
 const h = vi.hoisted(() => ({
   generateDraftMutate: vi.fn(),
   recordActivityMutate: vi.fn(),
+  investigateMutate: vi.fn(),
   freeGenerateMock: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
@@ -52,6 +53,10 @@ vi.mock("@/hooks/use-mast-api", () => ({
   }),
   useRecordLeadActivity: () => ({
     mutateAsync: h.recordActivityMutate,
+    isPending: false,
+  }),
+  useInvestigateLead: () => ({
+    mutateAsync: h.investigateMutate,
     isPending: false,
   }),
   useOpportunityExplanation: (leadId: number) => ({
@@ -143,6 +148,33 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
     h.generateDraftMutate.mockResolvedValue({
       body: "AI generated message for Bright Horizon Cafe",
       subject: "AI Subject Line",
+    });
+    h.investigateMutate.mockResolvedValue({
+      question: "Do they use WordPress?",
+      answer: "Detected website technology: WordPress, Elementor.",
+      mode: "verified_data",
+      confidence: "high",
+      evidence: ["Website on record: https://brighthorizon.com", "Detected web tech: WordPress, Elementor"],
+      gaps: ["Owner/decision-maker name is not verified in stored data."],
+      websiteSnapshot: {
+        checked: true,
+        url: "https://brighthorizon.com",
+        finalUrl: "https://brighthorizon.com",
+        statusCode: 200,
+        https: true,
+        title: "Bright Horizon Cafe",
+        metaDescription: null,
+        cmsOrTech: ["WordPress", "Elementor"],
+        bookingTools: [],
+        analyticsTools: [],
+        emailsFound: [],
+        socialLinks: [],
+        ownerHints: [],
+        hasContactForm: true,
+        hasMobileViewport: true,
+        error: null,
+      },
+      checkedAt: "2026-11-20T00:00:00Z",
     });
     localStorage.clear();
   });
@@ -586,7 +618,7 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
       expect(screen.getByText("Questions to Investigate Before Contacting")).toBeInTheDocument();
     });
 
-    it("honestly communicates that live web crawling is unavailable when querying a question", () => {
+    it("runs live/verified investigation when querying a specific research question", async () => {
       render(
         <AIAssistant
           lead={mockLead}
@@ -603,8 +635,23 @@ describe("AIAssistant Workspace — Tabs, Interactions, and Integration", () => 
 
       fireEvent.click(screen.getByRole("tab", { name: /research/i }));
 
-      expect(screen.getByText(/Telemetry & Verified Data Only/i)).toBeInTheDocument();
-      expect(screen.getByText(/Live web crawling and autonomous web research are not configured on this server/i)).toBeInTheDocument();
+      expect(screen.getByText(/Verified Data & Live Homepage Check/i)).toBeInTheDocument();
+
+      const input = screen.getByLabelText(/Specific Research Question/i);
+      fireEvent.change(input, { target: { value: "Do they use WordPress?" } });
+      fireEvent.click(screen.getByRole("button", { name: /^Investigate$/i }));
+
+      await waitFor(() => {
+        expect(h.investigateMutate).toHaveBeenCalledWith({
+          leadId: mockLead.id,
+          question: "Do they use WordPress?",
+        });
+      });
+
+      expect(await screen.findByTestId("investigation-result")).toBeInTheDocument();
+      expect(screen.getByText("Detected website technology: WordPress, Elementor.")).toBeInTheDocument();
+      expect(screen.getByText("WordPress")).toBeInTheDocument();
+      expect(screen.getByText("Elementor")).toBeInTheDocument();
     });
   });
 

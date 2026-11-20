@@ -47,6 +47,8 @@ export const MAST_CATALOG_TABLES = [
   "user_smtp_credentials",
   "user_notifications",
   "user_inbox_connections",
+  "workspace_members",
+  "workspace_invites",
   "discovery_streets_contamination_archive_2026_09",
   "user_discovery_street_state_contamination_archive_2026_09"
 ];
@@ -68,6 +70,8 @@ export const MAST_CATALOG_ROUTINES = [
   "deliver_lead_for_user",
   "award_goal_xp",
   "claim_milestone_reward",
+  "mast_workspace_owner_id",
+  "mast_can_access_user_data",
   "consume_crm_lead_credit",
   "claim_discovery_street",
   "release_discovery_street",

@@ -78,7 +78,7 @@ test("only the connected Send path calls sendLeadEmail; the manual path does not
 test("lead writes behind 'Mark as sent' are scoped to the authenticated user", () => {
   const api = read("src/lib/api.ts");
   const activity = body(api, "export async function createLeadActivity(");
-  assert.ok(activity.includes("requireUserId()"));
+  assert.ok(activity.includes("requireUserId()") || activity.includes("getWorkspaceOwnerId()"));
   assert.ok(activity.includes("user_id: userId"));
   assert.ok(activity.includes('from("lead_activities")'));
   assert.ok(!activity.includes('from("profiles")'));

@@ -18,6 +18,7 @@ import {
   type OutreachAction,
   type OutreachTone,
 } from "../../lib/outreachPrompt.js";
+import { resolveWorkspaceContext } from "../../lib/workspaceContext.js";
 
 export const outreachRouter = Router();
 
@@ -51,17 +52,32 @@ async function resolveUserProfile(userId: string): Promise<{
   plan: PlanId;
   focusArea?: string;
   fullName?: string;
+  workspaceOwnerId: string;
 }> {
+  const ctx = await resolveWorkspaceContext(userId);
   const { data: profile, error } = await supabaseAdmin
     .from("profiles")
     .select("subscription_plan, settings, full_name")
     .eq("id", userId)
     .single();
   if (error) throw error;
-  const plan = getPlan(profile?.subscription_plan).id;
-  const focusArea = (profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined;
+
+  let ownerProfile: any = profile;
+  if (ctx.workspaceOwnerId !== userId) {
+    const { data: op } = await supabaseAdmin
+      .from("profiles")
+      .select("subscription_plan, settings, full_name")
+      .eq("id", ctx.workspaceOwnerId)
+      .single();
+    if (op) ownerProfile = op;
+  }
+
+  const plan = getPlan(ownerProfile?.subscription_plan).id;
+  const focusArea =
+    ((profile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined) ??
+    ((ownerProfile?.settings as Record<string, unknown> | null)?.focusArea as string | undefined);
   const fullName = profile?.full_name as string | undefined;
-  return { plan, focusArea, fullName };
+  return { plan, focusArea, fullName, workspaceOwnerId: ctx.workspaceOwnerId };
 }
 
 /**
@@ -98,7 +114,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       });
     }
 
-    const { plan, focusArea, fullName } = await resolveUserProfile(userId);
+    const { plan, focusArea, fullName, workspaceOwnerId } = await resolveUserProfile(userId);
     if (!canUseAiFeature(plan, "outreachDraft")) {
       return res.status(403).json({
         code: "plan_restricted",
@@ -299,7 +315,7 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       `,
       )
       .eq("id", leadId)
-      .eq("user_id", userId)
+      .eq("user_id", workspaceOwnerId)
       .maybeSingle();
 
     if (leadError) throw leadError;

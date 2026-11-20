@@ -155,14 +155,14 @@ const tiers: Tier[] = [
     relationships: "✔ + Pipeline",
     automations: true,
     importExport: "CSV",
-    teamSeats: "Unlimited",
+    teamSeats: "7",
     features: [
       "1,000 Opportunities / Day",
       "25,000 Opportunities / Month",
       "AI Executive Briefings",
       "Weekly Intelligence",
       "AI Opportunity Insights",
-      "Unlimited Team Seats",
+      "7 Team Seats",
     ],
   },
 ];

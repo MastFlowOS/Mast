@@ -2,7 +2,7 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { intelligenceRouter, resetIntelligenceRateLimiters } from "../intelligence.js";
+import { intelligenceRouter, investigateDeps, resetIntelligenceRateLimiters } from "../intelligence.js";
 import { env } from "../../../config/env.js";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin.js";
 import { setAiClient, resetAiClient } from "../../../lib/ai.js";
@@ -311,7 +311,12 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
       }
 
       return {
-        select: () => ({ eq: () => ({ single: async () => ({ data: null, error: null }) }) }),
+        select: () => ({
+          eq: () => ({
+            single: async () => ({ data: null, error: null }),
+            maybeSingle: async () => ({ data: null, error: null }),
+          }),
+        }),
       };
     };
   });
@@ -2156,6 +2161,109 @@ describe("Intelligence Route Entitlements & Caching (/v1/intelligence)", () => {
         assert.deepEqual(capturedParams.reasoning, { effort: "low" });
       } finally {
         resetAiClient();
+      }
+    });
+  });
+
+  describe("POST /v1/intelligence/investigate/:leadId", () => {
+    test("returns 400 when question is empty", async () => {
+      const res = await fetch(`${baseUrl}/investigate/1`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${validToken}`,
+        },
+        body: JSON.stringify({ question: "   " }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    test("answers with verified data + website snapshot on Pro without calling advancedResearch AI", async () => {
+      userPlan = "pro";
+      const origInspect = investigateDeps.inspectWebsite;
+      investigateDeps.inspectWebsite = async (url) => ({
+        checked: true,
+        url: url ?? null,
+        finalUrl: url ?? null,
+        statusCode: 200,
+        https: true,
+        title: "Apex Dental Studio",
+        metaDescription: null,
+        cmsOrTech: ["WordPress"],
+        bookingTools: ["Calendly"],
+        analyticsTools: [],
+        emailsFound: [],
+        socialLinks: [],
+        ownerHints: [],
+        hasContactForm: true,
+        hasMobileViewport: true,
+        error: null,
+      });
+
+      try {
+        const res = await fetch(`${baseUrl}/investigate/1`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${validToken}`,
+          },
+          body: JSON.stringify({ question: "Do they use WordPress?" }),
+        });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.mode, "verified_data");
+        assert.match(data.answer, /WordPress/);
+        assert.equal(capturedAiCalls.length, 0);
+      } finally {
+        investigateDeps.inspectWebsite = origInspect;
+      }
+    });
+
+    test("uses AI synthesis on Premium plan when AI is configured", async () => {
+      userPlan = "premium";
+      mockAiResult = {
+        answer: "Apex Dental runs WordPress with Calendly online booking and holds 4.8 stars across 42 reviews.",
+        confidence: "high",
+        evidence: ["Detected web tech: WordPress", "Detected booking tools: Calendly"],
+        gaps: ["Owner name is not listed on the homepage."],
+      };
+      const origInspect = investigateDeps.inspectWebsite;
+      investigateDeps.inspectWebsite = async (url) => ({
+        checked: true,
+        url: url ?? null,
+        finalUrl: url ?? null,
+        statusCode: 200,
+        https: true,
+        title: "Apex Dental Studio",
+        metaDescription: null,
+        cmsOrTech: ["WordPress"],
+        bookingTools: ["Calendly"],
+        analyticsTools: [],
+        emailsFound: [],
+        socialLinks: [],
+        ownerHints: [],
+        hasContactForm: true,
+        hasMobileViewport: true,
+        error: null,
+      });
+
+      try {
+        const res = await fetch(`${baseUrl}/investigate/1`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${validToken}`,
+          },
+          body: JSON.stringify({ question: "Do they use WordPress and online booking?" }),
+        });
+        assert.equal(res.status, 200);
+        const data = await res.json();
+        assert.equal(data.mode, "ai");
+        assert.equal(data.confidence, "high");
+        assert.match(data.answer, /WordPress/);
+        assert.equal(capturedAiCalls.length, 1);
+      } finally {
+        investigateDeps.inspectWebsite = origInspect;
       }
     });
   });

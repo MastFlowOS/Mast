@@ -313,8 +313,8 @@ export const PLAN_LIMITS: Record<PlanId, PlanLimits> = {
   premium: {
     dailyOpportunities: 1000,
     monthlyOpportunities: 25000,
-    teamSeats: 999999,
-    isUnlimitedSeats: true,
+    teamSeats: 7,
+    isUnlimitedSeats: false,
   },
 };
 

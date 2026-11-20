@@ -88,6 +88,15 @@ function DashboardLayout() {
     // through "Personalize Your Workspace" before they can reach the dashboard.
     if (!user.onboardingCompleted) {
       navigate({ to: "/onboarding", replace: true });
+      return;
+    }
+    try {
+      const pendingInviteToken = localStorage.getItem("mast_pending_invite_token");
+      if (pendingInviteToken) {
+        navigate({ to: "/invite", search: { token: pendingInviteToken } as any });
+      }
+    } catch {
+      // ignore storage errors
     }
   }, [authLoading, navigate, user]);
 

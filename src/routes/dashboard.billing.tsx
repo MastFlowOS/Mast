@@ -89,7 +89,7 @@ const PLAN_BENEFITS: Record<string, string[]> = {
     "AI executive briefings",
     "Weekly intelligence",
     "AI opportunity insights",
-    "Unlimited team seats",
+    "7 team seats",
   ],
 };
 

@@ -110,7 +110,7 @@ export const PLANS: PlanConfig[] = [
       "AI Executive Briefings",
       "Weekly Intelligence",
       "AI Opportunity Insights",
-      "Unlimited Team Seats",
+      "7 Team Seats",
     ],
   },
 ];

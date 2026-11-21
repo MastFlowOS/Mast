@@ -20,11 +20,9 @@ import {
 } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import {
-  createDynamicIslandEvent,
   dismissDynamicIslandEvent,
   publishDynamicIslandEvent,
   useDynamicIsland,
-  type DynamicIslandEvent,
 } from "@/lib/dynamic-island";
 import { useNavIndicator } from "@/hooks/use-nav-indicator";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -371,7 +369,9 @@ function DashboardLayout() {
   const creditPct = credits.limit > 0
     ? Math.min(100, Math.round((credits.used / credits.limit) * 100)) : 0;
 
-  // ── Ambient Dynamic Island events (real due follow-ups + low credits) ──────
+  // ── One-time Dynamic Island reminders (due follow-ups + low credits) ───────
+  // Never keep reminders permanently stuck in the Dynamic Island. Notify once
+  // for 5 seconds and automatically dismiss.
   const dueFollowupsCount = useMemo(() => {
     if (!Array.isArray(followupsData) || followupsData.length === 0) return 0;
     const endOfToday = new Date();
@@ -384,58 +384,95 @@ function DashboardLayout() {
     }).length;
   }, [followupsData]);
 
-  const ambientEvents = useMemo<DynamicIslandEvent[]>(() => {
-    const list: DynamicIslandEvent[] = [];
+  const lastNotifiedFollowupsRef = useRef<number>(0);
 
-    if (dueFollowupsCount > 0 && !pathname.startsWith("/dashboard/follow-ups")) {
-      const eventId = `followups_due_${dueFollowupsCount}`;
-      list.push(
-        createDynamicIslandEvent({
-          id: eventId,
-          type: "notification",
-          title: `${dueFollowupsCount} follow-up${dueFollowupsCount === 1 ? " needs" : "s need"} attention`,
-          description: "New reminders just now.",
-          actionLabel: "Review →",
-          actionHref: "/dashboard/follow-ups",
-          timestamp: 20,
-          onAction: () => {
-            dismissDynamicIslandEvent(eventId);
-            dismissDynamicIslandEvent("notification");
-            void navigate({ to: "/dashboard/follow-ups" });
-          },
-        }),
-      );
+  useEffect(() => {
+    if (dueFollowupsCount <= 0 || pathname.startsWith("/dashboard/follow-ups")) {
+      return;
     }
 
-    const isLowCredits =
-      Boolean(account || user) &&
-      credits.limit > 0 &&
-      credits.remaining <= Math.min(50, Math.max(10, Math.floor(credits.limit * 0.1)));
-
-    if (isLowCredits && !pathname.startsWith("/dashboard/subscription")) {
-      const eventId = `credits_low_${credits.remaining}`;
-      list.push(
-        createDynamicIslandEvent({
-          id: eventId,
-          type: "credits_low",
-          title: "Credits running low",
-          description: `${credits.remaining.toLocaleString()} credit${credits.remaining === 1 ? "" : "s"} remaining.`,
-          actionLabel: isMaxPlan ? "Manage →" : "Upgrade →",
-          actionHref: "/dashboard/subscription",
-          timestamp: 10,
-          onAction: () => {
-            dismissDynamicIslandEvent(eventId);
-            dismissDynamicIslandEvent("credits_low");
-            void navigate({ to: "/dashboard/subscription" });
-          },
-        }),
-      );
+    const todayKey = new Date().toISOString().slice(0, 10);
+    let maxNotifiedToday = lastNotifiedFollowupsRef.current;
+    try {
+      const stored = localStorage.getItem("mast_followup_island_notified");
+      if (stored) {
+        const parsed = JSON.parse(stored) as { day?: string; count?: number };
+        if (parsed.day === todayKey && typeof parsed.count === "number") {
+          maxNotifiedToday = Math.max(maxNotifiedToday, parsed.count);
+        }
+      }
+    } catch {
+      // ignore storage errors
     }
 
-    return list;
-  }, [dueFollowupsCount, pathname, navigate, account, user, credits.limit, credits.remaining, isMaxPlan]);
+    // Only notify once for the current due follow-ups count (or if new follow-ups become due)
+    if (dueFollowupsCount <= maxNotifiedToday) {
+      return;
+    }
 
-  const { activeEvent } = useDynamicIsland(ambientEvents);
+    lastNotifiedFollowupsRef.current = dueFollowupsCount;
+    try {
+      localStorage.setItem(
+        "mast_followup_island_notified",
+        JSON.stringify({ day: todayKey, count: dueFollowupsCount }),
+      );
+    } catch {
+      // ignore storage errors
+    }
+
+    const eventId = `followups_due_${dueFollowupsCount}`;
+    publishDynamicIslandEvent({
+      id: eventId,
+      type: "notification",
+      title: `${dueFollowupsCount} follow-up${dueFollowupsCount === 1 ? " needs" : "s need"} attention`,
+      description: "Due today in your outreach queue.",
+      actionLabel: "Review →",
+      actionHref: "/dashboard/follow-ups",
+      autoDismissMs: 5000,
+      onAction: () => {
+        dismissDynamicIslandEvent(eventId);
+        void navigate({ to: "/dashboard/follow-ups" });
+      },
+    });
+  }, [dueFollowupsCount, pathname, navigate]);
+
+  const isLowCredits =
+    Boolean(account || user) &&
+    credits.limit > 0 &&
+    credits.remaining <= Math.min(50, Math.max(10, Math.floor(credits.limit * 0.1)));
+
+  useEffect(() => {
+    if (!isLowCredits || pathname.startsWith("/dashboard/subscription")) {
+      return;
+    }
+
+    const todayKey = new Date().toISOString().slice(0, 10);
+    try {
+      if (localStorage.getItem("mast_low_credits_island_notified") === todayKey) {
+        return;
+      }
+      localStorage.setItem("mast_low_credits_island_notified", todayKey);
+    } catch {
+      // ignore storage errors
+    }
+
+    const eventId = `credits_low_${credits.remaining}`;
+    publishDynamicIslandEvent({
+      id: eventId,
+      type: "credits_low",
+      title: "Credits running low",
+      description: `${credits.remaining.toLocaleString()} credit${credits.remaining === 1 ? "" : "s"} remaining.`,
+      actionLabel: isMaxPlan ? "Manage →" : "Upgrade →",
+      actionHref: "/dashboard/subscription",
+      autoDismissMs: 5000,
+      onAction: () => {
+        dismissDynamicIslandEvent(eventId);
+        void navigate({ to: "/dashboard/subscription" });
+      },
+    });
+  }, [isLowCredits, pathname, navigate, credits.remaining, isMaxPlan]);
+
+  const { activeEvent } = useDynamicIsland();
 
   const initials = user?.fullName
     ? user.fullName.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("")

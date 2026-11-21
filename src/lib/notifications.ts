@@ -66,15 +66,23 @@ export function formatNotificationTimestamp(
 export const DAILY_CREDITS_RESET_TITLE = "Daily Credits Reset";
 const DAILY_RESET_COOLDOWN_MS = 20 * 60 * 60 * 1000;
 
+const NOISY_MICRO_TOAST_RE =
+  /^(opening |instagram opened|gmail composer|email client opened|ai draft generated|message drafted|draft copied|message copied|copied to clipboard|inserted |could not generate|marked as sent|website audit completed|audit failed|playbook |booking settings|unsubscribe |safety settings)/i;
+
 /**
  * Keeps at most one (the newest) "Daily Credits Reset" entry in stored
- * notifications so repeated reset notifications never stack up.
+ * notifications and removes any legacy micro-action toast entries that were
+ * previously persisted into notification history.
  */
 export function dedupeDailyResetNotifications<
   T extends { title?: unknown; createdAt?: unknown },
 >(list: T[]): T[] {
   let seenReset = false;
   return list.filter((item) => {
+    const titleStr = typeof item?.title === "string" ? item.title.trim() : "";
+    if (titleStr && NOISY_MICRO_TOAST_RE.test(titleStr)) {
+      return false;
+    }
     if (item?.title !== DAILY_CREDITS_RESET_TITLE) return true;
     if (seenReset) return false;
     seenReset = true;

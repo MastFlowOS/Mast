@@ -463,6 +463,11 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
         ]);
         if (snap && snap.checked) {
+          if (snap.brokenLinks && snap.brokenLinks.length > 0) {
+            websiteObservations.push(
+              `Unlinked customer action button detected on homepage: ${snap.brokenLinks.slice(0, 2).join("; ")}.`,
+            );
+          }
           if (snap.cmsOrTech.length > 0) {
             websiteObservations.push(`Website platform: ${snap.cmsOrTech.join(", ")}.`);
           }
@@ -474,9 +479,11 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
           } else {
             websiteObservations.push(`Uses online booking: ${snap.bookingTools.join(", ")}.`);
           }
-          websiteObservations.push(
-            "Keep any website mention high-level and natural (e.g., making the design/layout look cleaner and more modern, or helping turn visitors into customers). Do not claim specific buttons or links are broken.",
-          );
+          if (!snap.brokenLinks || snap.brokenLinks.length === 0) {
+            websiteObservations.push(
+              "No dead customer buttons detected—keep any website comment natural and big-picture (e.g., making the design/layout look cleaner and more modern, or helping turn visitors into customers).",
+            );
+          }
         }
       } catch {
         // Non-fatal: live website check never blocks drafting

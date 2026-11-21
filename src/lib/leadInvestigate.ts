@@ -275,17 +275,29 @@ export function extractWebsiteSignalsFromHtml(html: string, finalUrl: string, st
   const imageCount = Array.from(html.matchAll(/<img\b/gi)).length;
 
   const brokenLinks: string[] = [];
-  const anchorMatches = html.matchAll(/<a\b[^>]*href=["']\s*(#|#!|javascript:void\(0\)|)\s*["'][^>]*>([\s\S]*?)<\/a>/gi);
+  const HIGH_INTENT_CTA_RE =
+    /^(?:(?:book|order|schedule|reserve)(?:\s+[a-zA-Z]{2,18}){1,3}|get\s+a?\s*quote|request\s+a?\s*quote|free\s+estimate|shop\s+now|buy\s+now)$/i;
+  const JS_TRIGGER_ATTR_RE =
+    /\b(?:onclick|data-toggle|data-bs-toggle|data-target|data-bs-target|data-modal|data-open|data-action|data-popup|aria-controls|aria-expanded|aria-haspopup|hx-get|hx-post|@click|x-on:click)\s*=/i;
+
+  const anchorMatches = html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi);
   for (const m of anchorMatches) {
+    const attrs = m[1] || "";
+    const hrefMatch = attrs.match(/\bhref\s*=\s*["']\s*(#|#!|javascript:void\(0\)|)\s*["']/i);
+    if (!hrefMatch) continue;
+    // Skip links that are actually JS modal/dropdown triggers
+    if (JS_TRIGGER_ATTR_RE.test(attrs)) continue;
+
     const label = decodeHtmlEntities(m[2].replace(/<[^>]+>/g, " "));
     if (
-      label.length >= 2 &&
-      label.length <= 40 &&
-      !/^(skip to|close|menu|toggle|back to top)$/i.test(label)
+      label.length >= 6 &&
+      label.length <= 32 &&
+      /^[a-zA-Z0-9\s&'-]+$/.test(label) &&
+      HIGH_INTENT_CTA_RE.test(label)
     ) {
-      const desc = `"${label}" button/link points to "${m[1] || "empty"}"`;
+      const desc = `"${label}" button links to "${hrefMatch[1] || "empty"}"`;
       if (!brokenLinks.includes(desc)) brokenLinks.push(desc);
-      if (brokenLinks.length >= 4) break;
+      if (brokenLinks.length >= 3) break;
     }
   }
 

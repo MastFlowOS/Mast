@@ -190,12 +190,15 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
       assert.ok(prompt.user.includes("https://cal.com/beboo/15min"));
     });
 
-    it("extracts broken # buttons, hero headline, and outdated copyright year from HTML", () => {
+    it("extracts only real high-intent customer action buttons (Book/Order/Schedule/Quote) with dead # links and ignores random nav/JS links like 'Mas'", () => {
       const html = `
         <html>
           <head><title>Plaza Ray Bakery</title></head>
           <body>
             <h1>Fresh sourdough and cookies baked every morning</h1>
+            <a href="#">Mas</a>
+            <a href="#">Read More</a>
+            <a href="#" data-bs-toggle="modal">Book Now</a>
             <a href="#">Order Cookies</a>
             <a href="">Book Catering</a>
             <footer>Copyright 2021 Plaza Ray</footer>
@@ -207,9 +210,12 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
       assert.equal(snap.copyrightYear, 2021);
       assert.ok(snap.brokenLinks?.some((b) => b.includes("Order Cookies")));
       assert.ok(snap.brokenLinks?.some((b) => b.includes("Book Catering")));
+      assert.equal(snap.brokenLinks?.some((b) => b.includes("Mas")), false);
+      assert.equal(snap.brokenLinks?.some((b) => b.includes("Read More")), false);
+      assert.equal(snap.brokenLinks?.some((b) => b.includes("Book Now")), false);
     });
 
-    it("feeds IG post, high-level website observations, and previous message bodySnippet into follow-up prompt while banning fake broken-button claims", () => {
+    it("feeds IG post, high-level website observations, and previous message bodySnippet into follow-up prompt", () => {
       const prompt = buildOutreachPrompt({
         channel: "email",
         action: "generate",
@@ -217,7 +223,7 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
         lead: {
           businessName: "Plaza Ray",
           igLastPost: "Posted fresh chocolate chip cookies straight out of the oven",
-          websiteObservations: ["Keep any website mention high-level and natural (e.g., making the design/layout look cleaner and more modern)."],
+          websiteObservations: ['Unlinked customer action button detected on homepage: "Order Cookies" button links to "#"'],
         },
         sequenceHistory: {
           isFollowUp: true,
@@ -234,8 +240,9 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
       });
 
       assert.ok(prompt.system.includes("BAN ROBOTIC RATING/STAT OPENERS"));
-      assert.ok(prompt.system.includes("NEVER CLAIM BROKEN BUTTONS"));
+      assert.ok(prompt.system.includes("ONLY MENTION REAL CUSTOMER-FACING BROKEN BUTTONS"));
       assert.ok(prompt.user.includes("chocolate chip cookies"));
+      assert.ok(prompt.user.includes("Order Cookies"));
       assert.ok(prompt.user.includes("Hey team, had a quick idea to make your site layout cleaner"));
     });
 

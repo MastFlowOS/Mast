@@ -20,6 +20,8 @@ import {
   type OutreachTone,
 } from "../../lib/outreachPrompt.js";
 import { resolveWorkspaceContext } from "../../lib/workspaceContext.js";
+import { inspectWebsiteSnapshot } from "../../lib/leadInvestigate.js";
+import { professionSlugForLabel } from "../../lib/professions.js";
 
 export const outreachRouter = Router();
 
@@ -313,7 +315,10 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         status,
         priority,
         opportunity_score,
-        profession_slug
+        profession_slug,
+        ig_bio,
+        ig_last_post,
+        ig_followers
       `,
       )
       .eq("id", leadId)
@@ -346,11 +351,11 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
     try {
       const { data: acts } = await supabaseAdmin
         .from("lead_activities")
-        .select("type, channel, subject, content, metadata, timestamp")
+        .select("type, channel, subject, body, content, metadata, timestamp")
         .eq("lead_id", leadId)
-        .eq("user_id", userId)
+        .eq("user_id", workspaceOwnerId)
         .order("timestamp", { ascending: false })
-        .limit(5);
+        .limit(10);
       if (acts && Array.isArray(acts)) {
         recentActivities = acts;
       }
@@ -362,13 +367,20 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       ["email_sent", "instagram_sent", "call_completed", "contact_form_sent"].includes(a.type),
     );
     const sequenceHistory = {
-      isFollowUp: previousSends.length > 0 || template === "follow_up",
+      isFollowUp:
+        previousSends.length > 0 ||
+        (typeof template === "string" &&
+          /^(follow_up|follow_up_2day|follow_up_5day|buried_bump|reengagement|pricing_transition)$/i.test(template)),
       touchCount: previousSends.length > 0 ? previousSends.length + 1 : 1,
-      previousSends: previousSends.map((s) => ({
-        channel: s.channel,
-        subject: s.subject,
-        timestamp: s.timestamp,
-      })),
+      previousSends: previousSends.map((s) => {
+        const rawText = typeof s.body === "string" && s.body.trim() ? s.body : typeof s.content === "string" ? s.content : "";
+        return {
+          channel: s.channel,
+          subject: s.subject,
+          timestamp: s.timestamp,
+          bodySnippet: rawText ? rawText.replace(/\s+/g, " ").trim().slice(0, 320) : undefined,
+        };
+      }),
     };
 
     const latestReply = recentActivities.find((a) => a.type === "reply_received");
@@ -441,6 +453,67 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
       // Non-fatal
     }
 
+    // Fast live homepage observation fallback when generating a fresh draft without a cached visual audit
+    const resolvedWebsite = (lead.website as string | null) || (business?.website as string | null) || null;
+    const websiteObservations: string[] = [];
+    if (action === "generate" && resolvedWebsite && !websiteVisualCritique) {
+      try {
+        const snap = await Promise.race([
+          inspectWebsiteSnapshot(resolvedWebsite),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]);
+        if (snap && snap.checked) {
+          if (snap.heroHeadline) {
+            websiteObservations.push(`Homepage main headline says: "${snap.heroHeadline}"`);
+          }
+          if (snap.subHeadlines && snap.subHeadlines.length > 0) {
+            websiteObservations.push(`Featured sections/services on homepage: ${snap.subHeadlines.map((s) => `"${s}"`).join(", ")}`);
+          }
+          if (snap.ctaLabels && snap.ctaLabels.length > 0) {
+            websiteObservations.push(`Current buttons/CTAs on page: ${snap.ctaLabels.map((c) => `"${c}"`).join(", ")}`);
+          }
+          if (snap.brokenLinks && snap.brokenLinks.length > 0) {
+            websiteObservations.push(`Broken/empty button or link detected: ${snap.brokenLinks.slice(0, 2).join("; ")}`);
+          }
+          if (snap.hasVideoOrMedia === false) {
+            websiteObservations.push("Homepage uses static content with no embedded video or motion showcase.");
+          } else if (snap.hasVideoOrMedia === true) {
+            websiteObservations.push("Homepage includes embedded video/media.");
+          }
+          if (typeof snap.imageCount === "number" && snap.imageCount <= 2) {
+            websiteObservations.push(`Homepage has very few images (${snap.imageCount} detected).`);
+          }
+          if (snap.cmsOrTech.length > 0) {
+            websiteObservations.push(`Built on: ${snap.cmsOrTech.join(", ")}.`);
+          }
+          if (snap.analyticsTools.length === 0) {
+            websiteObservations.push("No Meta Pixel or Google Analytics/Tag detected on homepage.");
+          }
+          if (!snap.metaDescription) {
+            websiteObservations.push("Homepage is missing an SEO meta description.");
+          }
+          if (!snap.https) {
+            websiteObservations.push("Site does not enforce HTTPS/SSL.");
+          }
+          if (!snap.hasMobileViewport) {
+            websiteObservations.push("Homepage is missing a mobile viewport tag.");
+          }
+          if (snap.bookingTools.length === 0) {
+            websiteObservations.push(
+              snap.hasContactForm
+                ? "Has a basic contact form, but no instant online booking tool."
+                : "No online booking widget or clear inquiry form found on the homepage.",
+            );
+          }
+          if (snap.copyrightYear) {
+            websiteObservations.push(`Footer copyright still shows ${snap.copyrightYear}.`);
+          }
+        }
+      } catch {
+        // Non-fatal: live website check never blocks drafting
+      }
+    }
+
     // Server-enforced model tier policy:
     // - Starter: always Fast tier. Never elevated by client request.
     // - Pro and Premium: Pro tier by default, or Fast tier if explicitly chosen.
@@ -478,11 +551,15 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
         reviewsRating: (business?.reviews_rating as number) || undefined,
         websiteIsWeak: (business?.website_is_weak as boolean) || undefined,
         loadTimeMs: (business?.load_time_ms as number) || undefined,
+        igFollowers: (lead as any).ig_followers || undefined,
+        igBio: (lead as any).ig_bio || undefined,
+        igLastPost: (lead as any).ig_last_post || undefined,
+        websiteObservations: websiteObservations.length > 0 ? websiteObservations : undefined,
         signals: (business?.signals as Record<string, unknown> | undefined) || undefined,
       },
       freelancer: {
         profession: focusArea || (lead.profession_slug ? lead.profession_slug.replace(/_/g, " ") : undefined),
-        professionSlug: lead.profession_slug || undefined,
+        professionSlug: professionSlugForLabel(focusArea) || lead.profession_slug || undefined,
         senderName: senderName || fullName || undefined,
         bookingUrl,
       },

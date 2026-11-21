@@ -10,7 +10,8 @@ import {
   verifyUnsubscribeToken,
 } from "../deliverability.js";
 import { deriveUxFindings } from "../websiteAudit.js";
-import { buildOutreachPrompt } from "../outreachPrompt.js";
+import { buildOutreachPrompt, resolveProfessionCreativeLens } from "../outreachPrompt.js";
+import { extractWebsiteSignalsFromHtml } from "../leadInvestigate.js";
 
 describe("Pre-Launch Agency Suite — Core Logic", () => {
   describe("Deliverability & Safety Helpers", () => {
@@ -187,6 +188,81 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
       assert.ok(prompt.user.includes("Casual Founder Voice"));
       assert.ok(prompt.user.includes("Hero section feels crowded"));
       assert.ok(prompt.user.includes("https://cal.com/beboo/15min"));
+    });
+
+    it("extracts broken # buttons, hero headline, and outdated copyright year from HTML", () => {
+      const html = `
+        <html>
+          <head><title>Plaza Ray Bakery</title></head>
+          <body>
+            <h1>Fresh sourdough and cookies baked every morning</h1>
+            <a href="#">Order Cookies</a>
+            <a href="">Book Catering</a>
+            <footer>Copyright 2021 Plaza Ray</footer>
+          </body>
+        </html>
+      `;
+      const snap = extractWebsiteSignalsFromHtml(html, "https://plazaray.com", 200);
+      assert.equal(snap.heroHeadline, "Fresh sourdough and cookies baked every morning");
+      assert.equal(snap.copyrightYear, 2021);
+      assert.ok(snap.brokenLinks?.some((b) => b.includes("Order Cookies")));
+      assert.ok(snap.brokenLinks?.some((b) => b.includes("Book Catering")));
+    });
+
+    it("feeds IG post, concrete website observations, and previous message bodySnippet into follow-up prompt", () => {
+      const prompt = buildOutreachPrompt({
+        channel: "email",
+        action: "generate",
+        template: "follow_up_2day",
+        lead: {
+          businessName: "Plaza Ray",
+          igLastPost: "Posted fresh chocolate chip cookies straight out of the oven",
+          websiteObservations: ['Broken/empty button or link detected: "Order Cookies" button/link points to "#"'],
+        },
+        sequenceHistory: {
+          isFollowUp: true,
+          touchCount: 2,
+          previousSends: [
+            {
+              channel: "email",
+              subject: "order button",
+              timestamp: "2026-11-19T10:00:00Z",
+              bodySnippet: "Hey team, noticed your Order Cookies button isn't linked yet.",
+            },
+          ],
+        },
+      });
+
+      assert.ok(prompt.system.includes("BAN ROBOTIC RATING/STAT OPENERS"));
+      assert.ok(prompt.user.includes("chocolate chip cookies"));
+      assert.ok(prompt.user.includes("Order Cookies"));
+      assert.ok(prompt.user.includes("Hey team, noticed your Order Cookies button"));
+    });
+
+    it("adapts creative personalization angles across different freelancer professions and enforces fresh-take regeneration", () => {
+      const videoLens = resolveProfessionCreativeLens("Video & Animation", "video_animation");
+      const designLens = resolveProfessionCreativeLens("Graphic Design", "graphic_design");
+      const marketingLens = resolveProfessionCreativeLens("Digital Marketing", "digital_marketing");
+
+      assert.ok(videoLens.angles.some((a) => /Reel|TikTok|motion/i.test(a)));
+      assert.ok(designLens.angles.some((a) => /Brand cohesion|visual hierarchy/i.test(a)));
+      assert.ok(marketingLens.angles.some((a) => /Meta Pixel|retargeting|local/i.test(a)));
+
+      const regenPrompt = buildOutreachPrompt({
+        channel: "email",
+        action: "generate",
+        lead: { businessName: "Plaza Ray" },
+        freelancer: { profession: "Video & Animation", professionSlug: "video_animation" },
+        currentDraft: {
+          subject: "previous subject",
+          body: "Hey team, saw your homepage uses static images and had a quick video idea.",
+        },
+      });
+
+      const payload = JSON.parse(regenPrompt.user);
+      assert.equal(payload.isRegeneratingFreshTake, true);
+      assert.ok(Array.isArray(payload.freelancerContext.creativeAnglesForProfession));
+      assert.ok(payload.freelancerContext.creativeAnglesForProfession.some((a: string) => /Reel|TikTok/i.test(a)));
     });
   });
 });

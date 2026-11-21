@@ -17,6 +17,13 @@ export interface WebsiteSnapshot {
   ownerHints: string[];
   hasContactForm: boolean;
   hasMobileViewport: boolean;
+  heroHeadline?: string | null;
+  subHeadlines?: string[];
+  ctaLabels?: string[];
+  brokenLinks?: string[];
+  hasVideoOrMedia?: boolean;
+  imageCount?: number;
+  copyrightYear?: number | null;
   error: string | null;
 }
 
@@ -106,6 +113,13 @@ function emptySnapshot(url: string | null, error: string | null = null): Website
     ownerHints: [],
     hasContactForm: false,
     hasMobileViewport: false,
+    heroHeadline: null,
+    subHeadlines: [],
+    ctaLabels: [],
+    brokenLinks: [],
+    hasVideoOrMedia: false,
+    imageCount: 0,
+    copyrightYear: null,
     error,
   };
 }
@@ -225,6 +239,69 @@ export function extractWebsiteSignalsFromHtml(html: string, finalUrl: string, st
   const hasContactForm = /<form\b[\s\S]*?(?:email|message|contact|inquiry|submit)[\s\S]*?<\/form>/i.test(html);
   const hasMobileViewport = /<meta\b[^>]*name=["']viewport["']/i.test(html);
 
+  const h1Match = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+  const rawH1 = h1Match ? decodeHtmlEntities(h1Match[1].replace(/<[^>]+>/g, " ")) : "";
+  const heroHeadline = rawH1 && rawH1.length >= 3 && rawH1.length <= 140 ? rawH1 : null;
+
+  const subHeadlines: string[] = [];
+  const h2Matches = html.matchAll(/<h[23]\b[^>]*>([\s\S]*?)<\/h[23]>/gi);
+  for (const m of h2Matches) {
+    const text = decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " "));
+    if (text.length >= 4 && text.length <= 90 && text !== heroHeadline && !subHeadlines.includes(text)) {
+      subHeadlines.push(text);
+      if (subHeadlines.length >= 4) break;
+    }
+  }
+
+  const ctaLabels: string[] = [];
+  const ctaMatches = html.matchAll(/<(?:button|a)\b[^>]*>([\s\S]*?)<\/(?:button|a)>/gi);
+  for (const m of ctaMatches) {
+    const label = decodeHtmlEntities(m[1].replace(/<[^>]+>/g, " "));
+    if (
+      label.length >= 3 &&
+      label.length <= 32 &&
+      /\b(book|order|schedule|shop|get|request|quote|menu|contact|call|buy|start|join|reserve|appointment|view|explore)\b/i.test(label) &&
+      !ctaLabels.includes(label)
+    ) {
+      ctaLabels.push(label);
+      if (ctaLabels.length >= 5) break;
+    }
+  }
+
+  const hasVideoOrMedia =
+    /<video\b|youtube\.com\/embed|player\.vimeo\.com|tiktok\.com\/embed|instagram\.com\/reel|wistia\.com|loom\.com/i.test(
+      html,
+    );
+  const imageCount = Array.from(html.matchAll(/<img\b/gi)).length;
+
+  const brokenLinks: string[] = [];
+  const anchorMatches = html.matchAll(/<a\b[^>]*href=["']\s*(#|#!|javascript:void\(0\)|)\s*["'][^>]*>([\s\S]*?)<\/a>/gi);
+  for (const m of anchorMatches) {
+    const label = decodeHtmlEntities(m[2].replace(/<[^>]+>/g, " "));
+    if (
+      label.length >= 2 &&
+      label.length <= 40 &&
+      !/^(skip to|close|menu|toggle|back to top)$/i.test(label)
+    ) {
+      const desc = `"${label}" button/link points to "${m[1] || "empty"}"`;
+      if (!brokenLinks.includes(desc)) brokenLinks.push(desc);
+      if (brokenLinks.length >= 4) break;
+    }
+  }
+
+  let copyrightYear: number | null = null;
+  const currentYear = new Date().getFullYear();
+  const copyMatches = Array.from(html.matchAll(/(?:©|&copy;|copyright)\s*(20\d{2})/gi));
+  if (copyMatches.length > 0) {
+    const years = copyMatches.map((m) => Number(m[1])).filter((y) => y >= 2010 && y <= currentYear);
+    if (years.length > 0) {
+      const newest = Math.max(...years);
+      if (newest <= currentYear - 2) {
+        copyrightYear = newest;
+      }
+    }
+  }
+
   return {
     checked: true,
     url: finalUrl,
@@ -241,6 +318,13 @@ export function extractWebsiteSignalsFromHtml(html: string, finalUrl: string, st
     ownerHints: Array.from(new Set(ownerHints)).slice(0, 3),
     hasContactForm,
     hasMobileViewport,
+    heroHeadline,
+    subHeadlines,
+    ctaLabels,
+    brokenLinks,
+    hasVideoOrMedia,
+    imageCount,
+    copyrightYear,
     error: null,
   };
 }

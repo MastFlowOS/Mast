@@ -34,6 +34,10 @@ export interface LeadOutreachData {
   reviewsRating?: number;
   websiteIsWeak?: boolean;
   loadTimeMs?: number;
+  igFollowers?: string;
+  igBio?: string;
+  igLastPost?: string;
+  websiteObservations?: string[];
   signals?: Record<string, unknown>;
 }
 
@@ -76,7 +80,122 @@ export interface SequenceHistory {
     subject?: string;
     timestamp?: string;
     angle?: string;
+    bodySnippet?: string;
   }>;
+}
+
+const PROFESSION_CREATIVE_LENSES: Record<string, string[]> = {
+  graphic_design: [
+    "Brand cohesion gap: their craft/product looks great, but the visual identity across their website, menus/packaging, or social graphics doesn't match that quality yet.",
+    "First-impression visual hierarchy: how their hero layout, typography, or color contrast frames their brand in the first 3 seconds.",
+    "Social-to-storefront visual polish: turning their best offers or signature items into thumb-stopping graphics, menus, or brand assets.",
+    "Refreshing dated brand assets or promo graphics so they stand out against cookie-cutter local competitors.",
+  ],
+  digital_marketing: [
+    "Traffic & retargeting blindspot: getting local visitors or social attention without a Meta Pixel / Google Tag or clear offer to capture and retarget them.",
+    "Search & local discovery capture: turning local 'near me' searches and profile views into tracked calls, bookings, or foot traffic.",
+    "Offer-led campaign hook: pitching a specific seasonal promo, local ad angle, or lead-capture funnel tailored to their signature service.",
+    "Bridging organic social activity into measurable customer inquiries.",
+  ],
+  writing_translation: [
+    "Homepage headline & positioning hook: sharpening their main hero message so first-time visitors immediately get why they're different.",
+    "Service/menu copy that sells: turning flat descriptions into vivid, high-converting copy that matches their real-world personality.",
+    "Email/retention storytelling: keeping past customers coming back with short, personality-driven updates or sequences.",
+    "Multilingual or local-market adaptation to reach a wider neighborhood demographic.",
+  ],
+  video_animation: [
+    "Short-form Reel/TikTok hook: turning their most visual product, service, or behind-the-scenes process into high-retention 15-30s vertical clips.",
+    "Static-to-motion upgrade: noticing their site or social feed relies on static photos where a quick motion clip or video hero would grab attention instantly.",
+    "Visual storytelling angle: showcasing the craft, energy, or customer reaction in a fast-paced edit built for local reach.",
+    "Ad creative / motion graphics that make their flagship offer pop in local feeds.",
+  ],
+  music_audio: [
+    "Sonic identity & audio polish: elevating their reels, ads, podcast, or in-store/promo videos with custom sound design, mixing, or original audio.",
+    "Voiceover & narrative clarity: making their promo clips or explainers sound warm, broadcast-ready, and unmistakable.",
+    "Custom audio hooks that keep viewers watching past the first 3 seconds on social video.",
+  ],
+  programming_tech: [
+    "Conversion & booking friction: what happens when a ready-to-buy visitor lands on their site on mobile and hits a dead button, slow load, or phone-only barrier.",
+    "Interactive flow upgrade: adding 1-tap online booking, ordering, or instant quote calculation directly on the page.",
+    "Technical trust & mobile responsiveness: fixing broken links, missing SSL, or cramped mobile layouts that quietly leak customers.",
+    "Custom automation or web integration that saves their team hours of manual back-and-forth.",
+  ],
+  data: [
+    "Attribution & conversion visibility: knowing exactly which channel, page, or campaign actually drives paying customers instead of guessing.",
+    "Customer & booking pattern insights: spotting peak demand, repeat-buyer trends, or drop-off points in their funnel.",
+    "Clean, zero-fluff reporting dashboard that consolidates their sales, bookings, or marketing data.",
+  ],
+  business: [
+    "Speed-to-lead & missed after-hours inquiries: capturing customers who reach out when the team is busy on the floor or closed.",
+    "Client intake & follow-up operations: streamlining how inquiries, quotes, and repeat bookings move from first message to paid client.",
+    "Operational bottleneck question: asking how they currently handle scheduling, follow-ups, or customer reactivation.",
+  ],
+  photography: [
+    "Hero & visual appetite appeal: replacing dated, dark, or stock-looking photos with crisp original imagery of their signature work, food, team, or space.",
+    "Consistent visual look across Website, Instagram, and Google listing so customers feel the quality before they walk in.",
+    "Quick, zero-disruption shoot concept focused on their highest-margin products or services.",
+  ],
+  finance: [
+    "Margin & cash-flow clarity for busy owners: keeping books, job costing, or recurring expenses clean without eating up their weekends.",
+    "Profitability visibility across services/locations so they know where their best margins actually come from.",
+    "Low-friction financial operations question tailored to growing independent businesses.",
+  ],
+  personal_growth_hobbies: [
+    "Founder/team energy, leadership, or workshop collaboration tailored to their community or team culture.",
+    "Partnering on a local experience, class, or customer-engagement event that brings new people through their doors.",
+  ],
+  end_to_end_project: [
+    "Complete digital storefront & conversion upgrade: connecting brand look, site experience, and booking/inquiry capture into one cohesive flow.",
+    "Fixing the gap between their real-world quality and how their online presence converts first-time visitors.",
+    "High-impact before/after concept covering both visual presentation and customer conversion.",
+  ],
+};
+
+export function resolveProfessionCreativeLens(
+  profession?: string,
+  professionSlug?: string,
+): { label: string; angles: string[] } {
+  if (professionSlug && PROFESSION_CREATIVE_LENSES[professionSlug]) {
+    return {
+      label: profession || professionSlug.replace(/_/g, " "),
+      angles: PROFESSION_CREATIVE_LENSES[professionSlug],
+    };
+  }
+  const p = (profession || "").toLowerCase();
+  if (/video|animat|reel|tiktok|editor|motion|film/i.test(p)) {
+    return { label: profession || "Video & Animation Specialist", angles: PROFESSION_CREATIVE_LENSES.video_animation };
+  }
+  if (/photo|shoot|camera/i.test(p)) {
+    return { label: profession || "Photographer", angles: PROFESSION_CREATIVE_LENSES.photography };
+  }
+  if (/writ|copy|content|translat|blog|ghost/i.test(p)) {
+    return { label: profession || "Copywriter & Content Specialist", angles: PROFESSION_CREATIVE_LENSES.writing_translation };
+  }
+  if (/market|seo|ads|media|growth|ppc|social/i.test(p)) {
+    return { label: profession || "Digital Marketing Specialist", angles: PROFESSION_CREATIVE_LENSES.digital_marketing };
+  }
+  if (/design|brand|graphic|ui|ux|creative|logo/i.test(p)) {
+    return { label: profession || "Design & Branding Specialist", angles: PROFESSION_CREATIVE_LENSES.graphic_design };
+  }
+  if (/music|audio|sound|voice|podcast/i.test(p)) {
+    return { label: profession || "Audio & Sound Specialist", angles: PROFESSION_CREATIVE_LENSES.music_audio };
+  }
+  if (/data|analyt|bi|tracking/i.test(p)) {
+    return { label: profession || "Data & Analytics Specialist", angles: PROFESSION_CREATIVE_LENSES.data };
+  }
+  if (/financ|account|bookkeep|cfo|tax/i.test(p)) {
+    return { label: profession || "Finance & Accounting Specialist", angles: PROFESSION_CREATIVE_LENSES.finance };
+  }
+  if (/dev|program|tech|web|software|engineer|automat|ai/i.test(p)) {
+    return { label: profession || "Web & Technical Specialist", angles: PROFESSION_CREATIVE_LENSES.programming_tech };
+  }
+  if (/busines|consult|operat|sales|crm/i.test(p)) {
+    return { label: profession || "Business & Operations Specialist", angles: PROFESSION_CREATIVE_LENSES.business };
+  }
+  return {
+    label: profession || "Independent Specialist",
+    angles: PROFESSION_CREATIVE_LENSES.end_to_end_project,
+  };
 }
 
 export interface BuildOutreachPromptParams {
@@ -129,7 +248,7 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
   const isFollowUp = Boolean(
     sequenceHistory?.isFollowUp ||
       (sequenceHistory?.touchCount && sequenceHistory.touchCount > 1) ||
-      template === "follow_up" ||
+      (template && /^(follow_up|follow_up_2day|follow_up_5day|buried_bump|reengagement|pricing_transition)$/i.test(template)) ||
       (contextNotes && /follow[- ]?up/i.test(contextNotes))
   );
 
@@ -144,6 +263,13 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
   const pSimilarStories =
     personalization.includeSimilarSuccessStories ?? personalization.similarBusinessSuccessStories ?? true;
 
+  const professionLens = resolveProfessionCreativeLens(
+    freelancer?.profession,
+    freelancer?.professionSlug,
+  );
+  const isRegeneratingFreshTake =
+    action === "generate" && Boolean(currentDraft?.body && currentDraft.body.trim().length > 15);
+
   // System Prompt: MAST-adapted cold outbound skill & strict evidence grounding
   const systemPrompt = [
     "You are MAST's AI Outreach Copywriter helping independent freelancers and specialists write cold messages to local and SMB business owners.",
@@ -157,12 +283,36 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     "- ZERO FABRICATED PROOF OR HISTORY: Never invent case studies, client results, ROI percentages ('we grew a clinic 40%'), prior calls/emails ('following up on my email from Tuesday'), or mutual connections unless present in `sequenceHistory` or user notes.",
     "- SPARSE DATA DIRECTIVE: When `leadData` is thin, drop fake personalization and use an honest, industry-relevant question asking how they currently handle that area. Never manufacture weaknesses or problems.",
     "",
-    "### 2. BUSINESS PERSONALIZATION WITH RESTRAINT (MENU, NOT CHECKLIST)",
-    "- PICK AT MOST 1-2 CUES: The enabled flags in `personalizationSettings` and fields in `leadData` are a menu of options, NOT a checklist to cram into every draft. Using all of them (name + city + rating + review count + niche) in one opener sounds robotic and creepy.",
-    "- NO DATABASE READOUTS OR MAIL-MERGE PHRASING: Never recite CRM fields back like a scraped spreadsheet (bad: 'I saw Acme Dental Studio, a dentist in Austin, TX, has a 4.8 rating across 42 reviews'). Reference details lightly the way a real person talks (e.g. 'saw your reviews in Austin', 'looks like the clinic stays busy', or skip stats altogether).",
+    "### 2. BUSINESS PERSONALIZATION WITH RESTRAINT (REAL HOOKS, NO DATABASE READOUTS)",
+    "- BAN ROBOTIC RATING/STAT OPENERS: NEVER open with 'Hey, I saw your 4.9 rating on...', 'Saw your 4.8 stars...', or 'Congrats on X reviews'. Nobody talks like that in real life—it immediately screams automated spam.",
+    "- USE REAL, SPECIFIC HOOKS FIRST (IN THIS ORDER):",
+    "  1. `contextNotes` (highest priority—whatever the user personally noticed).",
+    "  2. `leadData.igLastPost` / `leadData.igBio`: If present, react like a real human to what they actually posted or do (e.g. 'saw your recent post about...', 'loved the look of...'). Never invent post details that aren't in `igLastPost`.",
+    "  3. `leadData.websiteObservations` or `websiteVisualCritique`: Pick 1 concrete, real observation found on their actual homepage (for example: a specific dead '#' button by its exact label, missing mobile viewport, missing HTTPS, no online booking button, outdated copyright year, or what their hero headline says) and connect it naturally to how you can help.",
+    "  4. If none of those concrete hooks exist, SKIP fake personalization completely and open with a grounded, honest question relevant to their business.",
+    "- CONNECTED PERSONALIZATION ('SO WHAT?' TEST): Every personalized detail must tie directly into why you're reaching out. Never recite CRM fields back like a spreadsheet.",
+    "- PICK AT MOST 1-2 CUES: Never cram name + city + rating + niche into one opener.",
     "- TRANSLATE RAW LABELS INTO NATURAL WORDS: Never echo raw category/niche tags verbatim; talk naturally ('clinic', 'shop', 'team', 'studio', 'site').",
-    "- CONNECTED PERSONALIZATION ('SO WHAT?' TEST): Every personalized detail must tie directly into why you're reaching out. If removing the opening line leaves the rest of the pitch unchanged, cut the fluff line or bridge it naturally into the problem/question.",
     "- RESPECT PERSONALIZATION TOGGLES: Never bring up location, reviews/rating, Instagram activity, niche framing, or similar-business outcomes if the corresponding `personalizationSettings` flag is false. Only mention similar-business success stories if a real outcome is explicitly supplied in `contextNotes` or `customInstructions`.",
+    "",
+    "### 2B. CREATIVE DIVERSITY & FREELANCER-NICHE ADAPTATION (NEVER SOUND ONE-DIMENSIONAL)",
+    "- TAILOR TO THE SENDER'S EXACT CRAFT (`freelancerContext.profession` & `creativeAnglesForProfession`):",
+    "  * A Video Editor / Animator pitches short-form Reel hooks, motion storytelling, or turning static product/service visuals into high-retention clips—NOT web code.",
+    "  * A Graphic / Brand Designer pitches visual identity, menu/packaging/feed cohesion, or first-impression layout hierarchy.",
+    "  * A Photographer pitches original hero/product/food/space imagery and appetite appeal over stock or dated visuals.",
+    "  * A Copywriter / Content Specialist pitches homepage headline clarity, offer positioning, or customer retention copy.",
+    "  * A Digital Marketer / Growth Specialist pitches local search capture, retargeting gaps (missing Meta Pixel / Google Tag), or offer-driven campaigns.",
+    "  * A Web Developer / Tech Specialist pitches booking/ordering flow, mobile UX, speed, dead buttons, or time-saving automations.",
+    "  * A Business / Operations / Finance / Data / Audio Specialist pitches directly from their domain expertise using `freelancerContext.creativeAnglesForProfession`.",
+    "- DIVERSE PERSONALIZATION ARCHETYPES (ROTATE CREATIVELY, DO NOT REPEAT ONE FORMULA):",
+    "  1. Signature Item / Content Reaction: React to a specific product, service, section heading, or post from `igLastPost`, `igBio`, or `websiteObservations`.",
+    "  2. Craft vs. Storefront Contrast: Their real-world craft or local reputation is strong, but one specific part of their online experience doesn't do it justice yet.",
+    "  3. After-Hours Customer Moment: What happens when a local customer checks them out on their phone at 9pm and hits a specific friction point.",
+    "  4. Bite-Sized Creative Concept: Pitch 1 specific, tangible micro-idea tailored to their business (e.g. a 15s Reel concept, a sharper hero hook, a 1-tap booking bar, a visual refresh).",
+    "  5. Social-to-Site Momentum Bridge: Connecting their Instagram presence/bio to what happens when followers click through to their site.",
+    "  6. Local Standout Angle: How a small creative or conversion tweak separates them from other spots in their area.",
+    "  7. Sharp Operator Question: Skip the observation and ask a direct, thoughtful question about how they currently handle that part of the business.",
+    "- FRESH ANGLE ON REGENERATION (`isRegeneratingFreshTake: true`): When `isRegeneratingFreshTake` is true, `currentDraft.body` shows the previous draft the user wasn't satisfied with. You MUST pick a COMPLETELY DIFFERENT personalization archetype, opening hook, and angle from `currentDraft.body`. Never reuse the same opening line or observation.",
     "",
     "### 3. PEER VOICE & OUTBOUND CRAFT (CLARITY OVER RIGID FORMULAS)",
     "- WRITE LIKE A PEER, NOT A VENDOR: Sound like one thoughtful person texting or emailing another business owner. Use natural contractions (I'm, don't, you've). Lead with THEIR world (you/your), not I/we or a stiff 'My name is X and I do Y' opener.",
@@ -175,9 +325,13 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     "- NEVER USE STOCK OPENERS OR JARGON: Strictly avoid 'I hope this email finds you well', 'My name is ... and I work at ...', 'I came across your website/profile and was impressed', 'Here's the thing', 'I'll be honest', 'Quick question' as an opener, 'Say goodbye to', 'Unlock', 'Take your business to the next level', 'elevate', 'streamline', 'seamless', 'synergy', 'leverage', 'supercharge', 'unleash', 'cutting-edge', 'game-changing', 'holistic', 'empower', 'circle back', 'best-in-class', 'drive meaningful results'.",
     "- NO LAZY FOLLOW-UP FILLER: Never write 'Just checking in', 'Bumping this to the top', 'Following up on my previous message', 'Did you see my last email?', or guilt-tripping phrases like 'I never heard back'.",
     "",
-    "### 5. FLEXIBLE MESSAGE SHAPES & FOLLOW-UPS",
-    "- PICK ONE NATURAL SHAPE (DO NOT FORCE ONE TEMPLATE): Observation -> Angle -> Ask | Targeted Question -> Value -> Ask | Situation -> Typical Bottleneck -> Question. Only cite proof/examples if supplied in user context.",
-    "- STANDALONE FOLLOW-UPS (`isFollowUp: true`): Assume they missed earlier touches. Never repeat or summarize your last email. Bring one fresh angle, one grounded detail, or a low-pressure close-the-loop note (for touch 3+, allow an easy out with zero pressure).",
+    "### 5. FLEXIBLE MESSAGE SHAPES & HUMAN FOLLOW-UPS",
+    "- PICK ONE NATURAL SHAPE: Observation -> Why it matters -> Low-friction question | Direct question -> Simple fix -> Soft ask.",
+    "- FOLLOW-UPS (`isFollowUp: true` or follow-up `template`): Read `sequenceHistory.previousMessages` carefully so you NEVER repeat the same opener, pitch, or angle you already sent:",
+    "  * `follow_up_2day` / touch 2: Keep it 35-60 words. Do NOT say 'just checking in' or 'following up'. Bring ONE new concrete detail you didn't lead with (e.g., another website observation, IG note, or a 1-sentence example of the fix) and end with an easy yes/no question.",
+    "  * `follow_up_5day` / `buried_bump` / touch 3: Ultra-short (20-45 words). Casual human bump with zero guilt (e.g., 'Hey, did this get buried or just not a priority right now?').",
+    "  * `reengagement` / touch 4+: Short, respectful close-the-loop note giving them a zero-pressure out ('Won't keep bugging you—if you ever want help with this down the road, just reply here.').",
+    "  * `pricing_transition`: Plain-English next step or simple scope framing without sounding like a brochure; include `freelancerContext.bookingUrl` only if appropriate/warm.",
     "",
     "### 6. SUBJECT LINES (LOWERCASE, SHORT, INTERNAL-LOOKING)",
     "- email / contact_form subjects: 2-4 words max, lowercase, plain, boring/internal-looking like a colleague wrote it (e.g. 'patient booking flow', 'website question', 'local search').",
@@ -215,6 +369,7 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     template: template || undefined,
     lengthPreference: lengthPreference || undefined,
     isFollowUp,
+    isRegeneratingFreshTake,
     touchCount: sequenceHistory?.touchCount ?? (isFollowUp ? 2 : 1),
     customInstructions: customInstructions || undefined,
     senderName: senderName || freelancer?.senderName || undefined,
@@ -226,6 +381,7 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
     freelancerContext: {
       profession: freelancer?.profession || "Independent Specialist",
       professionSlug: freelancer?.professionSlug || undefined,
+      creativeAnglesForProfession: professionLens.angles,
       senderName: senderName || freelancer?.senderName || undefined,
       bookingUrl: freelancer?.bookingUrl || undefined,
     },
@@ -258,6 +414,13 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
       reviewsRating: pReviews ? lead.reviewsRating ?? undefined : undefined,
       websiteIsWeak: lead.websiteIsWeak ?? undefined,
       loadTimeMs: lead.loadTimeMs ?? undefined,
+      igFollowers: pInstagram ? lead.igFollowers || undefined : undefined,
+      igBio: pInstagram ? lead.igBio || undefined : undefined,
+      igLastPost: pInstagram ? lead.igLastPost || undefined : undefined,
+      websiteObservations:
+        lead.websiteObservations && lead.websiteObservations.length > 0
+          ? lead.websiteObservations
+          : undefined,
       signals: lead.signals ?? undefined,
     },
     personalizationSettings: {
@@ -273,6 +436,12 @@ export function buildOutreachPrompt(params: BuildOutreachPromptParams): {
           lastChannelUsed: sequenceHistory.previousSends[0]?.channel,
           lastSubjectUsed: sequenceHistory.previousSends[0]?.subject,
           lastSentAt: sequenceHistory.previousSends[0]?.timestamp,
+          previousMessages: sequenceHistory.previousSends.slice(0, 3).map((s) => ({
+            channel: s.channel,
+            subject: s.subject,
+            timestamp: s.timestamp,
+            bodySnippet: s.bodySnippet,
+          })),
         }
       : undefined,
   };

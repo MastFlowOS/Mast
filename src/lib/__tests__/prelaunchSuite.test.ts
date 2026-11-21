@@ -209,7 +209,7 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
       assert.ok(snap.brokenLinks?.some((b) => b.includes("Book Catering")));
     });
 
-    it("feeds IG post, concrete website observations, and previous message bodySnippet into follow-up prompt", () => {
+    it("feeds IG post, high-level website observations, and previous message bodySnippet into follow-up prompt while banning fake broken-button claims", () => {
       const prompt = buildOutreachPrompt({
         channel: "email",
         action: "generate",
@@ -217,7 +217,7 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
         lead: {
           businessName: "Plaza Ray",
           igLastPost: "Posted fresh chocolate chip cookies straight out of the oven",
-          websiteObservations: ['Broken/empty button or link detected: "Order Cookies" button/link points to "#"'],
+          websiteObservations: ["Keep any website mention high-level and natural (e.g., making the design/layout look cleaner and more modern)."],
         },
         sequenceHistory: {
           isFollowUp: true,
@@ -225,18 +225,18 @@ describe("Pre-Launch Agency Suite — Core Logic", () => {
           previousSends: [
             {
               channel: "email",
-              subject: "order button",
+              subject: "website idea",
               timestamp: "2026-11-19T10:00:00Z",
-              bodySnippet: "Hey team, noticed your Order Cookies button isn't linked yet.",
+              bodySnippet: "Hey team, had a quick idea to make your site layout cleaner on mobile.",
             },
           ],
         },
       });
 
       assert.ok(prompt.system.includes("BAN ROBOTIC RATING/STAT OPENERS"));
+      assert.ok(prompt.system.includes("NEVER CLAIM BROKEN BUTTONS"));
       assert.ok(prompt.user.includes("chocolate chip cookies"));
-      assert.ok(prompt.user.includes("Order Cookies"));
-      assert.ok(prompt.user.includes("Hey team, noticed your Order Cookies button"));
+      assert.ok(prompt.user.includes("Hey team, had a quick idea to make your site layout cleaner"));
     });
 
     it("adapts creative personalization angles across different freelancer professions and enforces fresh-take regeneration", () => {

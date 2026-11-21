@@ -463,51 +463,20 @@ outreachRouter.post("/draft", requireAuth, outreachDraftLimiter, async (req, res
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
         ]);
         if (snap && snap.checked) {
-          if (snap.heroHeadline) {
-            websiteObservations.push(`Homepage main headline says: "${snap.heroHeadline}"`);
-          }
-          if (snap.subHeadlines && snap.subHeadlines.length > 0) {
-            websiteObservations.push(`Featured sections/services on homepage: ${snap.subHeadlines.map((s) => `"${s}"`).join(", ")}`);
-          }
-          if (snap.ctaLabels && snap.ctaLabels.length > 0) {
-            websiteObservations.push(`Current buttons/CTAs on page: ${snap.ctaLabels.map((c) => `"${c}"`).join(", ")}`);
-          }
-          if (snap.brokenLinks && snap.brokenLinks.length > 0) {
-            websiteObservations.push(`Broken/empty button or link detected: ${snap.brokenLinks.slice(0, 2).join("; ")}`);
-          }
-          if (snap.hasVideoOrMedia === false) {
-            websiteObservations.push("Homepage uses static content with no embedded video or motion showcase.");
-          } else if (snap.hasVideoOrMedia === true) {
-            websiteObservations.push("Homepage includes embedded video/media.");
-          }
-          if (typeof snap.imageCount === "number" && snap.imageCount <= 2) {
-            websiteObservations.push(`Homepage has very few images (${snap.imageCount} detected).`);
-          }
           if (snap.cmsOrTech.length > 0) {
-            websiteObservations.push(`Built on: ${snap.cmsOrTech.join(", ")}.`);
-          }
-          if (snap.analyticsTools.length === 0) {
-            websiteObservations.push("No Meta Pixel or Google Analytics/Tag detected on homepage.");
-          }
-          if (!snap.metaDescription) {
-            websiteObservations.push("Homepage is missing an SEO meta description.");
+            websiteObservations.push(`Website platform: ${snap.cmsOrTech.join(", ")}.`);
           }
           if (!snap.https) {
-            websiteObservations.push("Site does not enforce HTTPS/SSL.");
-          }
-          if (!snap.hasMobileViewport) {
-            websiteObservations.push("Homepage is missing a mobile viewport tag.");
+            websiteObservations.push("Website is not using HTTPS/SSL.");
           }
           if (snap.bookingTools.length === 0) {
-            websiteObservations.push(
-              snap.hasContactForm
-                ? "Has a basic contact form, but no instant online booking tool."
-                : "No online booking widget or clear inquiry form found on the homepage.",
-            );
+            websiteObservations.push("No embedded online booking tool (Calendly/Booksy/Square/etc.) detected on homepage.");
+          } else {
+            websiteObservations.push(`Uses online booking: ${snap.bookingTools.join(", ")}.`);
           }
-          if (snap.copyrightYear) {
-            websiteObservations.push(`Footer copyright still shows ${snap.copyrightYear}.`);
-          }
+          websiteObservations.push(
+            "Keep any website mention high-level and natural (e.g., making the design/layout look cleaner and more modern, or helping turn visitors into customers). Do not claim specific buttons or links are broken.",
+          );
         }
       } catch {
         // Non-fatal: live website check never blocks drafting

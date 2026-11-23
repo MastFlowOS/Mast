@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const IG_WATCHER_LABEL: &str = "ig-watcher";
+pub const IG_PROFILE_CHECKER_LABEL: &str = "ig-profile-checker";
 pub const IG_DIRECT_INBOX_URL: &str = "https://www.instagram.com/direct/inbox/";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1233,6 +1234,366 @@ pub fn handle_ig_profile_check_report(
     }
 }
 
+fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
+    let req_json = serde_json::to_string(request_id).unwrap_or_else(|_| "\"\"".to_string());
+    let handle_json = serde_json::to_string(handle).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"
+(() => {{
+  if (window.__mastProfileCheckerLoaded) return;
+  window.__mastProfileCheckerLoaded = true;
+
+  const REQUEST_ID = {req_json};
+  const TARGET_HANDLE = {handle_json}.toLowerCase();
+  const nowMs = Date.now();
+  let reported = false;
+
+  const state = {{
+    userId: null,
+    followersCount: null,
+    postsCount: null,
+    isPrivate: null,
+    bio: null,
+    newestTsSec: null,
+    newestCaption: null,
+    hasActiveStory: null,
+    sawProfileData: false,
+  }};
+
+  function send(payload) {{
+    if (reported) return;
+    reported = true;
+    try {{
+      const internals = window.__TAURI_INTERNALS__;
+      if (internals && typeof internals.invoke === "function") {{
+        internals.invoke("report_ig_profile_check", {{ payload }}).catch(() => {{}});
+      }}
+    }} catch (_) {{}}
+  }}
+
+  function stripXssi(text) {{
+    return typeof text === "string" ? text.replace(/^for\s*\(\s*;\s*;\s*\)\s*;?\s*/, "") : "";
+  }}
+
+  function parseHumanCount(raw) {{
+    if (typeof raw === "number" && Number.isFinite(raw)) return Math.round(raw);
+    if (typeof raw !== "string") return null;
+    const cleaned = raw.trim().toLowerCase().replace(/,/g, "");
+    const m = cleaned.match(/^(\d+(?:\.\d+)?)\s*([km])?$/);
+    if (!m) return null;
+    const n = Number(m[1]);
+    if (!Number.isFinite(n)) return null;
+    if (m[2] === "k") return Math.round(n * 1000);
+    if (m[2] === "m") return Math.round(n * 1000000);
+    return Math.round(n);
+  }}
+
+  function considerPostTs(ts, cap) {{
+    if (typeof ts === "number" && Number.isFinite(ts) && ts > 1_000_000_000 && ts < 4_000_000_000) {{
+      if (state.newestTsSec === null || ts > state.newestTsSec) {{
+        state.newestTsSec = ts;
+        if (typeof cap === "string" && cap.trim()) {{
+          state.newestCaption = cap.trim().replace(/\s+/g, " ").slice(0, 140);
+        }}
+      }}
+    }}
+  }}
+
+  function checkReelTs(reelTs) {{
+    if (typeof reelTs === "number" && reelTs > 1_000_000_000) {{
+      const ageSec = Math.floor(Date.now() / 1000) - reelTs;
+      state.hasActiveStory = ageSec >= 0 && ageSec <= 86400;
+    }}
+  }}
+
+  function extractCaption(node) {{
+    if (!node || typeof node !== "object") return null;
+    if (node.caption && typeof node.caption.text === "string") return node.caption.text;
+    const edges = node.edge_media_to_caption && node.edge_media_to_caption.edges;
+    if (Array.isArray(edges) && edges[0] && edges[0].node && typeof edges[0].node.text === "string") {{
+      return edges[0].node.text;
+    }}
+    return null;
+  }}
+
+  function scanJson(node, depth = 0, inTargetTimeline = false) {{
+    if (!node || typeof node !== "object" || depth > 12) return;
+    if (Array.isArray(node)) {{
+      for (let i = 0; i < node.length && i < 40; i++) {{
+        scanJson(node[i], depth + 1, inTargetTimeline);
+      }}
+      return;
+    }}
+
+    // 1. Match target user object
+    const uname = typeof node.username === "string" ? node.username.trim().toLowerCase() : "";
+    if (uname === TARGET_HANDLE) {{
+      state.sawProfileData = true;
+      if (!state.userId && (node.pk || node.id)) state.userId = String(node.pk || node.id);
+      if (typeof node.is_private === "boolean") state.isPrivate = node.is_private;
+      if (typeof node.follower_count === "number") state.followersCount = node.follower_count;
+      if (node.edge_followed_by && typeof node.edge_followed_by.count === "number") {{
+        state.followersCount = node.edge_followed_by.count;
+      }}
+      if (typeof node.media_count === "number") state.postsCount = node.media_count;
+      if (node.edge_owner_to_timeline_media && typeof node.edge_owner_to_timeline_media.count === "number") {{
+        state.postsCount = node.edge_owner_to_timeline_media.count;
+      }}
+      if (!state.bio && typeof node.biography === "string" && node.biography.trim()) {{
+        state.bio = node.biography.trim().slice(0, 220);
+      }}
+      if (typeof node.latest_reel_media === "number") checkReelTs(node.latest_reel_media);
+      if (typeof node.has_active_story === "boolean") state.hasActiveStory = node.has_active_story;
+    }}
+
+    // 2. Match post / media node with taken_at or taken_at_timestamp
+    const postTs =
+      typeof node.taken_at === "number"
+        ? node.taken_at
+        : typeof node.taken_at_timestamp === "number"
+          ? node.taken_at_timestamp
+          : null;
+    if (postTs !== null) {{
+      const ownerUname =
+        (node.user && typeof node.user.username === "string" && node.user.username.toLowerCase()) ||
+        (node.owner && typeof node.owner.username === "string" && node.owner.username.toLowerCase()) ||
+        "";
+      const ownerId =
+        (node.user && (node.user.pk || node.user.id) && String(node.user.pk || node.user.id)) ||
+        (node.owner && node.owner.id && String(node.owner.id)) ||
+        "";
+      if (
+        inTargetTimeline ||
+        ownerUname === TARGET_HANDLE ||
+        (state.userId && ownerId && ownerId === state.userId)
+      ) {{
+        state.sawProfileData = true;
+        considerPostTs(postTs, extractCaption(node));
+      }}
+    }}
+
+    // 3. Match story / reel tray objects
+    if (Array.isArray(node.reels_media)) {{
+      for (const reel of node.reels_media) {{
+        const rUser = reel && reel.user;
+        const rUname = rUser && typeof rUser.username === "string" ? rUser.username.toLowerCase() : "";
+        const rId = String((reel && reel.id) || (rUser && (rUser.pk || rUser.id)) || "");
+        if (rUname === TARGET_HANDLE || (state.userId && rId === state.userId)) {{
+          if (Array.isArray(reel.items)) state.hasActiveStory = reel.items.length > 0;
+          if (typeof reel.latest_reel_media === "number") checkReelTs(reel.latest_reel_media);
+        }}
+      }}
+    }}
+
+    // 4. Recurse into child keys (mark timeline containers so posts without nested owner still match)
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length && i < 60; i++) {{
+      const k = keys[i];
+      const v = node[k];
+      if (!v || typeof v !== "object") continue;
+      const nextTimeline =
+        inTargetTimeline ||
+        k === "edge_owner_to_timeline_media" ||
+        k === "xdt_api__v1__feed__user_timeline_graphql_connection";
+      scanJson(v, depth + 1, nextTimeline);
+    }}
+  }}
+
+  function handleResponseText(text) {{
+    if (!text || text.length < 20) return;
+    const cleaned = stripXssi(text);
+    // Instagram GraphQL sometimes returns NDJSON (multiple JSON objects per line)
+    const lines = cleaned.includes("\n") ? cleaned.split("\n") : [cleaned];
+    for (const line of lines) {{
+      const trimmed = line.trim();
+      if (!trimmed || (trimmed[0] !== "{{" && trimmed[0] !== "[")) continue;
+      try {{
+        scanJson(JSON.parse(trimmed), 0, false);
+      }} catch (_) {{}}
+    }}
+    maybeFinishEarly();
+  }}
+
+  // Hook fetch & XHR BEFORE Instagram's React app runs
+  try {{
+    const origFetch = window.fetch;
+    if (typeof origFetch === "function") {{
+      window.fetch = function (...args) {{
+        return origFetch.apply(this, args).then((res) => {{
+          try {{
+            const url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
+            if (url.includes("graphql") || url.includes("/api/v1/")) {{
+              res.clone().text().then(handleResponseText).catch(() => {{}});
+            }}
+          }} catch (_) {{}}
+          return res;
+        }});
+      }};
+    }}
+
+    const origOpen = XMLHttpRequest.prototype.open;
+    const origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {{
+      this.__mastChkUrl = typeof url === "string" ? url : "";
+      return origOpen.call(this, method, url, ...rest);
+    }};
+    XMLHttpRequest.prototype.send = function (...args) {{
+      this.addEventListener("load", function () {{
+        try {{
+          if (this.__mastChkUrl && (this.__mastChkUrl.includes("graphql") || this.__mastChkUrl.includes("/api/v1/"))) {{
+            handleResponseText(this.responseText);
+          }}
+        }} catch (_) {{}}
+      }});
+      return origSend.apply(this, args);
+    }};
+  }} catch (_) {{}}
+
+  function scanEmbeddedScriptsAndDom() {{
+    try {{
+      const path = (window.location.pathname || "").toLowerCase();
+      if (
+        path.startsWith("/accounts/login") ||
+        path.startsWith("/challenge") ||
+        path.startsWith("/two_factor") ||
+        document.querySelector('input[name="username"], input[name="password"], form#loginForm')
+      ) {{
+        send({{
+          requestId: REQUEST_ID,
+          ok: false,
+          handle: TARGET_HANDLE,
+          note: "Connect Instagram once to check last post & live stories.",
+          needsLogin: true,
+        }});
+        return;
+      }}
+
+      const bodyText = (document.body && document.body.innerText) || "";
+      if (
+        /sorry,\s*this page isn't available/i.test(bodyText) ||
+        /the link you followed may be broken/i.test(bodyText)
+      ) {{
+        send({{
+          requestId: REQUEST_ID,
+          ok: false,
+          handle: TARGET_HANDLE,
+          note: "Instagram account not found (handle may have changed).",
+          needsLogin: false,
+        }});
+        return;
+      }}
+
+      // Scan SSR Relay JSON script blocks embedded in HTML
+      const scripts = document.querySelectorAll('script[type="application/json"]');
+      for (const s of scripts) {{
+        const txt = s.textContent || "";
+        if (txt.includes(TARGET_HANDLE) || txt.includes("taken_at") || txt.includes("follower_count")) {{
+          handleResponseText(txt);
+        }}
+      }}
+
+      // DOM fallback for header counts & live Story ring
+      const header = document.querySelector("header");
+      if (header) {{
+        state.sawProfileData = true;
+        const headerText = header.innerText || "";
+        if (state.postsCount === null) {{
+          const pm = headerText.match(/([\d.,]+[kKmM]?)\s+posts?\b/i);
+          if (pm) state.postsCount = parseHumanCount(pm[1]);
+        }}
+        if (state.followersCount === null) {{
+          const fm = headerText.match(/([\d.,]+[kKmM]?)\s+followers?\b/i);
+          if (fm) state.followersCount = parseHumanCount(fm[1]);
+        }}
+        if (state.isPrivate === null && /this account is private/i.test(bodyText)) {{
+          state.isPrivate = true;
+        }}
+        // Instagram draws the active Story gradient ring on a <canvas> around the profile avatar
+        if (state.hasActiveStory === null) {{
+          const canvases = header.querySelectorAll("canvas");
+          let hasRing = false;
+          for (const c of canvases) {{
+            const rect = c.getBoundingClientRect();
+            if (rect.width >= 50 && rect.height >= 50) {{
+              hasRing = true;
+              break;
+            }}
+          }}
+          if (hasRing) {{
+            state.hasActiveStory = true;
+          }}
+        }}
+      }}
+    }} catch (_) {{}}
+  }}
+
+  function finalize() {{
+    scanEmbeddedScriptsAndDom();
+    if (reported) return;
+
+    const gotAny =
+      state.sawProfileData ||
+      state.newestTsSec !== null ||
+      state.followersCount !== null ||
+      state.postsCount !== null ||
+      state.hasActiveStory !== null;
+
+    if (!gotAny) {{
+      send({{
+        requestId: REQUEST_ID,
+        ok: false,
+        handle: TARGET_HANDLE,
+        note: "Could not read Instagram profile right now — click Open IG to verify directly.",
+        needsLogin: false,
+      }});
+      return;
+    }}
+
+    const lastPostAt = state.newestTsSec ? new Date(state.newestTsSec * 1000).toISOString() : null;
+    const lastPostDaysAgo = state.newestTsSec
+      ? Math.max(0, Math.floor((Date.now() - state.newestTsSec * 1000) / 86400000))
+      : null;
+
+    send({{
+      requestId: REQUEST_ID,
+      ok: true,
+      handle: TARGET_HANDLE,
+      lastPostDaysAgo,
+      lastPostAt,
+      lastPostCaption: state.newestCaption,
+      hasActiveStory: state.hasActiveStory,
+      followersCount: state.followersCount,
+      postsCount: state.postsCount,
+      isPrivate: state.isPrivate,
+      bio: state.bio,
+      note: null,
+      needsLogin: false,
+    }});
+  }}
+
+  function maybeFinishEarly() {{
+    if (reported) return;
+    if (state.newestTsSec !== null && (state.followersCount !== null || state.postsCount !== null)) {{
+      // Give Instagram 700ms more for any story ring / header paint, then report immediately
+      setTimeout(finalize, 700);
+    }}
+  }}
+
+  window.addEventListener("DOMContentLoaded", () => {{
+    setTimeout(scanEmbeddedScriptsAndDom, 1200);
+    setTimeout(scanEmbeddedScriptsAndDom, 3000);
+    setTimeout(finalize, 6000);
+  }});
+
+  // Hard fallback in case DOMContentLoaded already fired
+  setTimeout(finalize, 9500);
+}})();
+"#,
+        req_json = req_json,
+        handle_json = handle_json
+    )
+}
+
 pub async fn run_ig_profile_check(
     app: &AppHandle,
     watcher_state: &IgWatcherState,
@@ -1268,35 +1629,23 @@ pub async fn run_ig_profile_check(
         return empty_err("Invalid Instagram handle.", false);
     }
 
-    // Ensure background IG watcher window exists if user previously connected IG
     let (is_connected, is_enabled) = watcher_state
         .inner
         .lock()
         .map(|g| (g.connected, g.enabled))
         .unwrap_or((false, false));
 
-    if app.get_webview_window(IG_WATCHER_LABEL).is_none() {
-        if is_connected || is_enabled {
-            let _ = create_or_show_watcher(app, watcher_state, false, false);
-            // Give the background webview a brief moment to boot instagram.com
-            let _ = tauri::async_runtime::spawn_blocking(|| {
-                std::thread::sleep(Duration::from_millis(2200));
-            })
-            .await;
-        } else {
-            return empty_err(
-                "Connect Instagram once to check last post & live stories.",
-                true,
-            );
-        }
-    }
-
-    let Some(win) = app.get_webview_window(IG_WATCHER_LABEL) else {
+    if !is_connected && !is_enabled {
         return empty_err(
             "Connect Instagram once to check last post & live stories.",
             true,
         );
-    };
+    }
+
+    // Close any stale hidden profile checker window before creating a fresh one
+    if let Some(existing) = app.get_webview_window(IG_PROFILE_CHECKER_LABEL) {
+        let _ = existing.destroy();
+    }
 
     let request_id = format!("igchk_{}_{}", now_epoch_ms(), clean_handle);
     let (tx, rx) = mpsc::channel::<IgProfileCheckPayload>();
@@ -1305,27 +1654,53 @@ pub async fn run_ig_profile_check(
         pending.insert(request_id.clone(), tx);
     }
 
-    let req_json = serde_json::to_string(&request_id).unwrap_or_else(|_| "\"\"".to_string());
-    let handle_json = serde_json::to_string(&clean_handle).unwrap_or_else(|_| "\"\"".to_string());
-    let js = format!(
-        "if (typeof window.__mastIgCheckProfile === 'function') {{ window.__mastIgCheckProfile({}, {}); }} else {{ try {{ window.__TAURI_INTERNALS__.invoke('report_ig_profile_check', {{ payload: {{ requestId: {}, ok: false, handle: {}, note: 'Instagram session still loading — try clicking Check IG again in 2 seconds.', needsLogin: false }} }}); }} catch (_) {{}} }}",
-        req_json, handle_json, req_json, handle_json
-    );
-
-    if win.eval(&js).is_err() {
+    let profile_url_str = format!("https://www.instagram.com/{}/", clean_handle);
+    let Ok(profile_url) = profile_url_str.parse() else {
         if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
             pending.remove(&request_id);
         }
-        return empty_err("Could not reach Instagram session — try again.", false);
+        return empty_err("Invalid Instagram handle.", false);
+    };
+
+    let data_dir = webview_data_dir(&watcher_state.data_dir);
+    let _ = fs::create_dir_all(&data_dir);
+    let init_script = build_profile_checker_init_script(&request_id, &clean_handle);
+
+    let created = WebviewWindowBuilder::new(
+        app,
+        IG_PROFILE_CHECKER_LABEL,
+        WebviewUrl::External(profile_url),
+    )
+    .title("MAST Instagram Check")
+    .inner_size(1100.0, 820.0)
+    .visible(false)
+    .focused(false)
+    .skip_taskbar(true)
+    .transparent(false)
+    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    .data_directory(data_dir)
+    .initialization_script(&init_script)
+    .build();
+
+    if created.is_err() {
+        if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
+            pending.remove(&request_id);
+        }
+        return empty_err("Could not launch Instagram check — try again.", false);
     }
 
     let received = tauri::async_runtime::spawn_blocking(move || {
-        rx.recv_timeout(Duration::from_secs(16))
+        rx.recv_timeout(Duration::from_secs(14))
     })
     .await;
 
     if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
         pending.remove(&request_id);
+    }
+
+    // Always destroy the ephemeral hidden window so it uses 0 background RAM
+    if let Some(win) = app.get_webview_window(IG_PROFILE_CHECKER_LABEL) {
+        let _ = win.destroy();
     }
 
     match received {

@@ -11,7 +11,7 @@ mod ig_watcher;
 use ig_watcher::{
     create_or_show_watcher, handle_ig_profile_check_report, handle_ig_watcher_report,
     run_ig_profile_check, webview_data_dir, IgProfileCheckPayload, IgWatcherReportPayload,
-    IgWatcherState, IgWatcherStatus, IG_WATCHER_LABEL,
+    IgWatcherState, IgWatcherStatus, IG_PROFILE_CHECKER_LABEL, IG_WATCHER_LABEL,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1014,7 +1014,7 @@ fn report_ig_profile_check(
     ig_state: State<IgWatcherState>,
     payload: IgProfileCheckPayload,
 ) -> Result<(), String> {
-    if webview.label() != IG_WATCHER_LABEL {
+    if webview.label() != IG_WATCHER_LABEL && webview.label() != IG_PROFILE_CHECKER_LABEL {
         return Err("Unauthorized webview for IG profile check report".to_string());
     }
     handle_ig_profile_check_report(&ig_state, payload);
@@ -1249,6 +1249,12 @@ mod tests {
                 .resolve_access("report_ig_profile_check", IG_WATCHER_LABEL, IG_WATCHER_LABEL, &ig_origin)
                 .is_some(),
             "ig-watcher must be able to invoke report_ig_profile_check"
+        );
+        assert!(
+            authority
+                .resolve_access("report_ig_profile_check", IG_PROFILE_CHECKER_LABEL, IG_PROFILE_CHECKER_LABEL, &ig_origin)
+                .is_some(),
+            "ig-profile-checker must be able to invoke report_ig_profile_check"
         );
         assert!(
             authority

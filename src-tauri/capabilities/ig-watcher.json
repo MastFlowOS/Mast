@@ -3,10 +3,12 @@
   "identifier": "ig-watcher",
   "description": "Strictly scoped capability for the background Instagram reply watcher webview",
   "windows": [
-    "ig-watcher"
+    "ig-watcher",
+    "ig-profile-checker"
   ],
   "webviews": [
-    "ig-watcher"
+    "ig-watcher",
+    "ig-profile-checker"
   ],
   "local": false,
   "remote": {

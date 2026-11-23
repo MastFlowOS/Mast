@@ -1,10 +1,17 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   computeBusinessActivity,
   fetchLiveInstagramActivity,
   formatDaysAgoLabel,
   parseDaysAgoFromText,
 } from "../businessActivity";
+import {
+  canAutoCheckIgHandle,
+  IG_MAX_PER_HOUR,
+  IG_MIN_GAP_MS,
+  recordIgCheckAttempt,
+  resetIgSafetyStoreForTests,
+} from "../igActivitySafety";
 
 describe("businessActivity", () => {
   it("parses stored last-post strings and formats labels accurately", () => {
@@ -102,5 +109,57 @@ describe("businessActivity", () => {
     expect(res.lastPostDaysAgo).toBe(5);
     expect(res.hasActiveStory).toBeNull();
     expect(res.note).toMatch(/login/i);
+  });
+});
+
+describe("igActivitySafety (anti-ban guardrails)", () => {
+  beforeEach(() => {
+    resetIgSafetyStoreForTests();
+  });
+
+  it("caches a checked handle for 24h and enforces 8s cooldown between different handles", () => {
+    const t0 = 1_700_000_000_000;
+    expect(canAutoCheckIgHandle("bakery_one", t0)).toEqual({ allowed: true });
+
+    recordIgCheckAttempt("bakery_one", { ok: true, nowMs: t0 });
+
+    // Same handle is cached for 24h
+    expect(canAutoCheckIgHandle("bakery_one", t0 + 60_000)).toEqual({
+      allowed: false,
+      reason: "cached",
+    });
+
+    // Different handle blocked during 8s cooldown
+    const duringCooldown = canAutoCheckIgHandle("bakery_two", t0 + 3_000);
+    expect(duringCooldown.allowed).toBe(false);
+    if (!duringCooldown.allowed) {
+      expect(duringCooldown.reason).toBe("cooldown");
+    }
+
+    // Different handle allowed after 8s cooldown
+    expect(canAutoCheckIgHandle("bakery_two", t0 + IG_MIN_GAP_MS + 500)).toEqual({
+      allowed: true,
+    });
+  });
+
+  it("enforces hourly cap and triggers 1-hour backoff on rate limit", () => {
+    let now = 1_700_000_000_000;
+    for (let i = 0; i < IG_MAX_PER_HOUR; i++) {
+      recordIgCheckAttempt(`shop_${i}`, { ok: true, nowMs: now });
+      now += IG_MIN_GAP_MS + 1000;
+    }
+
+    expect(canAutoCheckIgHandle("shop_extra", now)).toEqual({
+      allowed: false,
+      reason: "hourly_cap",
+    });
+
+    resetIgSafetyStoreForTests();
+    recordIgCheckAttempt("shop_rl", { ok: false, rateLimited: true, nowMs: now });
+    const afterRl = canAutoCheckIgHandle("another_shop", now + 60_000);
+    expect(afterRl.allowed).toBe(false);
+    if (!afterRl.allowed) {
+      expect(afterRl.reason).toBe("backoff");
+    }
   });
 });

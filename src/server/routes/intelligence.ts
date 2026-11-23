@@ -1750,7 +1750,37 @@ intelligenceRouter.post("/activity/:leadId/check-ig", requireAuth, readLimiter, 
       return res.json({ activity });
     }
 
-    const liveIg = await fetchLiveInstagramActivity(igHandle);
+    const bodyLive = req.body?.liveIg && typeof req.body.liveIg === "object"
+      ? (req.body.liveIg as Record<string, unknown>)
+      : null;
+
+    const liveIg: LiveInstagramCheckResult = bodyLive
+      ? {
+          ok: Boolean(bodyLive.ok),
+          handle: typeof bodyLive.handle === "string" && bodyLive.handle.trim() ? bodyLive.handle.trim() : igHandle,
+          lastPostDaysAgo:
+            typeof bodyLive.lastPostDaysAgo === "number" && Number.isFinite(bodyLive.lastPostDaysAgo)
+              ? Math.max(0, Math.floor(bodyLive.lastPostDaysAgo))
+              : null,
+          lastPostAt: typeof bodyLive.lastPostAt === "string" ? bodyLive.lastPostAt : null,
+          lastPostCaption:
+            typeof bodyLive.lastPostCaption === "string" ? bodyLive.lastPostCaption.slice(0, 140) : null,
+          hasActiveStory:
+            typeof bodyLive.hasActiveStory === "boolean" ? bodyLive.hasActiveStory : null,
+          followersCount:
+            typeof bodyLive.followersCount === "number" && Number.isFinite(bodyLive.followersCount)
+              ? Math.max(0, Math.floor(bodyLive.followersCount))
+              : null,
+          postsCount:
+            typeof bodyLive.postsCount === "number" && Number.isFinite(bodyLive.postsCount)
+              ? Math.max(0, Math.floor(bodyLive.postsCount))
+              : null,
+          isPrivate: typeof bodyLive.isPrivate === "boolean" ? bodyLive.isPrivate : null,
+          bio: typeof bodyLive.bio === "string" ? bodyLive.bio.slice(0, 220) : null,
+          note: typeof bodyLive.note === "string" ? bodyLive.note.slice(0, 220) : null,
+          checkedAt: new Date().toISOString(),
+        }
+      : await fetchLiveInstagramActivity(igHandle);
     const cacheKey = `${userId}:${leadId}`;
     liveIgCache.set(cacheKey, {
       expiresAt: Date.now() + LIVE_IG_CACHE_TTL_MS,

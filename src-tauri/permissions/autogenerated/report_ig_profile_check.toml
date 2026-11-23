@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-ig-profile-check"
+description = "Enables the report_ig_profile_check command without any pre-configured scope."
+commands.allow = ["report_ig_profile_check"]
+
+[[permission]]
+identifier = "deny-report-ig-profile-check"
+description = "Denies the report_ig_profile_check command without any pre-configured scope."
+commands.deny = ["report_ig_profile_check"]

@@ -1109,7 +1109,9 @@ export function useLeadBusinessActivity(leadId: number | undefined, enabled = tr
 export function useCheckLeadInstagramActivity(leadId: number | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => checkLeadInstagramActivity(leadId!),
+    mutationFn: (payload?: {
+      liveIg?: Partial<import("@/lib/businessActivity").LiveInstagramCheckResult> | null;
+    }) => checkLeadInstagramActivity(leadId!, payload?.liveIg ?? null),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.leadBusinessActivity(leadId), data);
       if (leadId) {

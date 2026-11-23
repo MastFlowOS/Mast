@@ -40,6 +40,18 @@ import {
   useCheckLeadInstagramActivity,
 } from "@/hooks/use-mast-api";
 import { computeBusinessActivity } from "@/lib/businessActivity";
+import {
+  checkDesktopIgProfile,
+  getDesktopIgWatcherStatus,
+  isDesktopApp,
+  openDesktopIgWatcher,
+} from "@/lib/desktop";
+import {
+  canAutoCheckIgHandle,
+  IG_AUTO_CHECK_DWELL_MS,
+  isRateLimitNote,
+  recordIgCheckAttempt,
+} from "@/lib/igActivitySafety";
 import { openExternalPopup } from "@/lib/externalPopup";
 import { normalizeInstagram } from "@/lib/instagram";
 import {
@@ -339,6 +351,15 @@ export function LeftSidebar({
   // Business Activity & Instagram Activity read + live check mutation
   const { data: activityPayload } = useLeadBusinessActivity(lead.id);
   const checkIgActivity = useCheckLeadInstagramActivity(lead.id);
+  const [desktopIgChecking, setDesktopIgChecking] = useState(false);
+  const [desktopIgNeedsLogin, setDesktopIgNeedsLogin] = useState(false);
+  const [desktopIgNote, setDesktopIgNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDesktopIgNeedsLogin(false);
+    setDesktopIgNote(null);
+  }, [lead.id]);
+
   const businessActivity = useMemo(() => {
     if (activityPayload?.activity) return activityPayload.activity;
     return computeBusinessActivity({
@@ -359,12 +380,112 @@ export function LeftSidebar({
     lead.igLastPost,
   ]);
 
-  const handleCheckInstagramActivity = async () => {
-    if (checkIgActivity.isPending) return;
+  const isCheckingIg = desktopIgChecking || checkIgActivity.isPending;
+  const inDesktopApp = isDesktopApp();
+
+  const runDesktopIgProfileCheck = async (handle: string, isAuto: boolean) => {
+    setDesktopIgChecking(true);
     try {
-      await checkIgActivity.mutateAsync();
+      const desktopRes = await checkDesktopIgProfile(handle);
+      if (!desktopRes) return;
+
+      if (desktopRes.needsLogin) {
+        setDesktopIgNeedsLogin(true);
+        setDesktopIgNote(
+          desktopRes.note || "Connect Instagram once to auto-check posts & live stories.",
+        );
+        return;
+      }
+
+      const rateLimited = isRateLimitNote(desktopRes.note);
+      recordIgCheckAttempt(handle, { ok: desktopRes.ok, rateLimited });
+
+      if (desktopRes.ok) {
+        setDesktopIgNote(null);
+        await checkIgActivity.mutateAsync({ liveIg: desktopRes });
+        return;
+      }
+
+      if (rateLimited) {
+        setDesktopIgNote("Paused auto-checks for 1 hour to keep your IG account safe.");
+      } else if (!isAuto && desktopRes.note) {
+        setDesktopIgNote(desktopRes.note);
+      }
     } catch {
-      // Non-blocking: UI already shows Open Profile fallback
+      if (!isAuto) {
+        setDesktopIgNote("Could not check Instagram right now — try again.");
+      }
+    } finally {
+      setDesktopIgChecking(false);
+    }
+  };
+
+  // Safe automatic Instagram check on Mast Desktop:
+  // Waits 2.2s after opening a lead (cancelled if you flip past quickly),
+  // skips if checked within 24h, enforces an 8s cooldown & 20/hr safety cap,
+  // and only runs if the user's IG session is already connected.
+  useEffect(() => {
+    const handle = businessActivity.instagram.handle;
+    if (!inDesktopApp || !handle) return;
+    if (businessActivity.instagram.source === "live") return;
+
+    const decision = canAutoCheckIgHandle(handle);
+    if (!decision.allowed) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        if (cancelled) return;
+        const watcher = await getDesktopIgWatcherStatus();
+        if (cancelled) return;
+        if (!watcher?.connected) {
+          setDesktopIgNeedsLogin(true);
+          setDesktopIgNote("Connect Instagram once to auto-check posts & live stories.");
+          return;
+        }
+        await runDesktopIgProfileCheck(handle, true);
+      })();
+    }, IG_AUTO_CHECK_DWELL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [lead.id, inDesktopApp, businessActivity.instagram.handle, businessActivity.instagram.source]);
+
+  const handleCheckInstagramActivity = async () => {
+    if (isCheckingIg) return;
+    setDesktopIgNote(null);
+    setDesktopIgNeedsLogin(false);
+
+    const handle = businessActivity.instagram.handle;
+    if (!handle) return;
+
+    if (!inDesktopApp) {
+      setDesktopIgNote("Live Instagram post & story checks require the MAST Desktop app.");
+      return;
+    }
+
+    const decision = canAutoCheckIgHandle(handle);
+    if (!decision.allowed && decision.reason === "backoff") {
+      setDesktopIgNote("Paused briefly to keep your Instagram account safe — try again later.");
+      return;
+    }
+    if (!decision.allowed && decision.reason === "cooldown") {
+      setDesktopIgNote("Pacing checks (8s cooldown) to keep your Instagram account safe.");
+      return;
+    }
+
+    await runDesktopIgProfileCheck(handle, false);
+  };
+
+  const handleConnectInstagramDesktop = async () => {
+    try {
+      await openDesktopIgWatcher(true);
+      setDesktopIgNeedsLogin(false);
+      setDesktopIgNote("Sign in to Instagram in the popup — MAST will auto-check leads after.");
+    } catch {
+      setDesktopIgNote("Could not open Instagram login window.");
     }
   };
 
@@ -827,36 +948,54 @@ export function LeftSidebar({
                       </p>
                     )}
 
-                    {businessActivity.instagram.liveCheckNote && (
+                    {!inDesktopApp && (
+                      <p className="text-[10px] text-muted-foreground leading-snug bg-card/40 border border-border/50 rounded-lg px-2 py-1.5">
+                        Live Instagram post &amp; story checks require the <strong className="text-foreground">MAST Desktop app</strong>.
+                      </p>
+                    )}
+
+                    {inDesktopApp && (desktopIgNote || businessActivity.instagram.liveCheckNote) && (
                       <p className="text-[10px] text-muted-foreground leading-snug">
-                        {businessActivity.instagram.liveCheckNote}
+                        {desktopIgNote || businessActivity.instagram.liveCheckNote}
                       </p>
                     )}
 
                     <div className="flex items-center gap-1.5 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => void handleCheckInstagramActivity()}
-                        disabled={checkIgActivity.isPending}
-                        className="flex-1 inline-flex items-center justify-center gap-1.5 h-7 px-2 rounded-lg border border-border/70 bg-card/60 hover:bg-card text-[11px] font-medium text-foreground transition-colors cursor-pointer disabled:opacity-60"
-                      >
-                        {checkIgActivity.isPending ? (
-                          <>
-                            <Loader2 className="size-3 animate-spin" />
-                            <span>Checking...</span>
-                          </>
+                      {inDesktopApp &&
+                        (desktopIgNeedsLogin ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleConnectInstagramDesktop()}
+                            className="flex-1 inline-flex items-center justify-center gap-1.5 h-7 px-2 rounded-lg bg-brand hover:bg-brand/90 text-[11px] font-semibold text-white transition-colors cursor-pointer"
+                          >
+                            <Instagram className="size-3" />
+                            <span>Connect IG</span>
+                          </button>
                         ) : (
-                          <>
-                            <RefreshCw className="size-3" />
-                            <span>Check IG</span>
-                          </>
-                        )}
-                      </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleCheckInstagramActivity()}
+                            disabled={isCheckingIg}
+                            className="flex-1 inline-flex items-center justify-center gap-1.5 h-7 px-2 rounded-lg border border-border/70 bg-card/60 hover:bg-card text-[11px] font-medium text-foreground transition-colors cursor-pointer disabled:opacity-60"
+                          >
+                            {isCheckingIg ? (
+                              <>
+                                <Loader2 className="size-3 animate-spin" />
+                                <span>Checking...</span>
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="size-3" />
+                                <span>Refresh IG</span>
+                              </>
+                            )}
+                          </button>
+                        ))}
                       {businessActivity.instagram.profileUrl && (
                         <button
                           type="button"
                           onClick={() => openExternalPopup(businessActivity.instagram.profileUrl!)}
-                          className="inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg border border-border/70 bg-card/40 hover:bg-card text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                          className={`${inDesktopApp ? "" : "flex-1 "}inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg border border-border/70 bg-card/40 hover:bg-card text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer`}
                         >
                           <span>Open IG</span>
                           <ExternalLink className="size-3" />

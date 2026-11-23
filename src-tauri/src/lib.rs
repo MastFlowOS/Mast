@@ -9,7 +9,8 @@ use tauri::{AppHandle, Manager, State};
 
 mod ig_watcher;
 use ig_watcher::{
-    create_or_show_watcher, handle_ig_watcher_report, webview_data_dir, IgWatcherReportPayload,
+    create_or_show_watcher, handle_ig_profile_check_report, handle_ig_watcher_report,
+    run_ig_profile_check, webview_data_dir, IgProfileCheckPayload, IgWatcherReportPayload,
     IgWatcherState, IgWatcherStatus, IG_WATCHER_LABEL,
 };
 
@@ -998,6 +999,28 @@ fn report_ig_watcher_state(
     Ok(handle_ig_watcher_report(&app, &ig_state, payload))
 }
 
+#[tauri::command]
+async fn check_ig_profile_desktop(
+    app: AppHandle,
+    ig_state: State<'_, IgWatcherState>,
+    handle: String,
+) -> Result<IgProfileCheckPayload, String> {
+    Ok(run_ig_profile_check(&app, &ig_state, handle).await)
+}
+
+#[tauri::command]
+fn report_ig_profile_check(
+    webview: tauri::Webview,
+    ig_state: State<IgWatcherState>,
+    payload: IgProfileCheckPayload,
+) -> Result<(), String> {
+    if webview.label() != IG_WATCHER_LABEL {
+        return Err("Unauthorized webview for IG profile check report".to_string());
+    }
+    handle_ig_profile_check_report(&ig_state, payload);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app_state = AppState {
@@ -1033,7 +1056,9 @@ pub fn run() {
             ensure_ig_watcher_background,
             refresh_ig_watcher,
             disconnect_ig_watcher,
-            report_ig_watcher_state
+            report_ig_watcher_state,
+            check_ig_profile_desktop,
+            report_ig_profile_check
         ])
         .on_page_load(|webview, payload| {
             let url = payload.url();
@@ -1157,6 +1182,7 @@ mod tests {
             "ensure_ig_watcher_background",
             "refresh_ig_watcher",
             "disconnect_ig_watcher",
+            "check_ig_profile_desktop",
         ];
 
         for cmd in required_commands {
@@ -1217,6 +1243,12 @@ mod tests {
                 .resolve_access("report_ig_watcher_state", IG_WATCHER_LABEL, IG_WATCHER_LABEL, &ig_origin)
                 .is_some(),
             "ig-watcher must be able to invoke report_ig_watcher_state"
+        );
+        assert!(
+            authority
+                .resolve_access("report_ig_profile_check", IG_WATCHER_LABEL, IG_WATCHER_LABEL, &ig_origin)
+                .is_some(),
+            "ig-watcher must be able to invoke report_ig_profile_check"
         );
         assert!(
             authority

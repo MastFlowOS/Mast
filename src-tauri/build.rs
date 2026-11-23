@@ -17,6 +17,8 @@ fn main() {
             "refresh_ig_watcher",
             "disconnect_ig_watcher",
             "report_ig_watcher_state",
+            "check_ig_profile_desktop",
+            "report_ig_profile_check",
         ]),
     );
 

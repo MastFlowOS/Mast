@@ -3671,12 +3671,14 @@ export async function getLeadBusinessActivity(
 
 export async function checkLeadInstagramActivity(
   leadId: number,
+  liveIg?: Partial<import("./businessActivity").LiveInstagramCheckResult> | null,
 ): Promise<{ activity: import("./businessActivity").BusinessActivityReport }> {
   return backendFetch<{ activity: import("./businessActivity").BusinessActivityReport }>(
     `/v1/intelligence/activity/${leadId}/check-ig`,
     {
       method: "POST",
       timeoutMs: 15_000,
+      body: JSON.stringify(liveIg ? { liveIg } : {}),
     },
   );
 }

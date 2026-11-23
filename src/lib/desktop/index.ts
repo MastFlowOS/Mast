@@ -293,3 +293,32 @@ export async function disconnectDesktopIgWatcher(): Promise<DesktopIgWatcherStat
   if (!isDesktopApp()) return null;
   return await invoke<DesktopIgWatcherStatus>("disconnect_ig_watcher");
 }
+
+export interface DesktopIgProfileCheckResult {
+  requestId: string;
+  ok: boolean;
+  handle: string;
+  lastPostDaysAgo: number | null;
+  lastPostAt: string | null;
+  lastPostCaption: string | null;
+  hasActiveStory: boolean | null;
+  followersCount: number | null;
+  postsCount: number | null;
+  isPrivate: boolean | null;
+  bio: string | null;
+  note: string | null;
+  needsLogin: boolean;
+}
+
+export async function checkDesktopIgProfile(
+  handle: string,
+): Promise<DesktopIgProfileCheckResult | null> {
+  if (!isDesktopApp()) return null;
+  try {
+    return await invoke<DesktopIgProfileCheckResult>("check_ig_profile_desktop", {
+      handle,
+    });
+  } catch {
+    return null;
+  }
+}

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -54,6 +55,25 @@ pub struct IgWatcherUpdateEvent {
     pub events: Vec<IgObservedThread>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IgProfileCheckPayload {
+    pub request_id: String,
+    pub ok: bool,
+    pub handle: String,
+    pub last_post_days_ago: Option<i64>,
+    pub last_post_at: Option<String>,
+    pub last_post_caption: Option<String>,
+    pub has_active_story: Option<bool>,
+    pub followers_count: Option<i64>,
+    pub posts_count: Option<i64>,
+    pub is_private: Option<bool>,
+    pub bio: Option<String>,
+    pub note: Option<String>,
+    #[serde(default)]
+    pub needs_login: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct IgWatcherInner {
     pub enabled: bool,
@@ -69,6 +89,7 @@ pub struct IgWatcherInner {
 #[derive(Clone)]
 pub struct IgWatcherState {
     pub inner: Arc<Mutex<IgWatcherInner>>,
+    pub pending_profile_checks: Arc<Mutex<HashMap<String, mpsc::Sender<IgProfileCheckPayload>>>>,
     pub data_dir: PathBuf,
 }
 
@@ -87,6 +108,7 @@ impl IgWatcherState {
                 auto_hide_on_login: false,
                 force_close: false,
             })),
+            pending_profile_checks: Arc::new(Mutex::new(HashMap::new())),
             data_dir,
         }
     }
@@ -734,6 +756,180 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
     scanVisibleThreads(Boolean(forceReport));
   };
 
+  // On-demand profile + active Story check executed inside the user's real
+  // logged-in Instagram WebView session (same-origin, residential IP).
+  window.__mastIgCheckProfile = async (requestId, rawHandle) => {
+    const cleanHandle = String(rawHandle || "").replace(/^@+/, "").trim().toLowerCase();
+    const sendResult = (payload) => {
+      try {
+        const internals = window.__TAURI_INTERNALS__;
+        if (!internals || typeof internals.invoke !== "function") return;
+        internals.invoke("report_ig_profile_check", { payload }).catch(() => {});
+      } catch (_) {}
+    };
+
+    if (!cleanHandle) {
+      sendResult({
+        requestId,
+        ok: false,
+        handle: "",
+        note: "Invalid Instagram handle.",
+        needsLogin: false,
+      });
+      return;
+    }
+
+    if (isLoginOrChallengePage()) {
+      sendResult({
+        requestId,
+        ok: false,
+        handle: cleanHandle,
+        note: "Connect your Instagram account once to check posts & stories live.",
+        needsLogin: true,
+      });
+      return;
+    }
+
+    try {
+      const headers = {
+        "x-ig-app-id": "936619743392459",
+        "x-requested-with": "XMLHttpRequest",
+        Accept: "application/json, text/plain, */*",
+      };
+      const profileRes = await fetch(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanHandle)}`,
+        { method: "GET", credentials: "include", headers }
+      );
+
+      if (profileRes.status === 401 || profileRes.status === 403) {
+        sendResult({
+          requestId,
+          ok: false,
+          handle: cleanHandle,
+          note: "Instagram session expired — click Connect IG to sign back in.",
+          needsLogin: true,
+        });
+        return;
+      }
+
+      if (!profileRes.ok) {
+        sendResult({
+          requestId,
+          ok: false,
+          handle: cleanHandle,
+          note: profileRes.status === 404
+            ? "Instagram account not found (handle may have changed)."
+            : `Instagram returned status ${profileRes.status}. Try again shortly.`,
+          needsLogin: false,
+        });
+        return;
+      }
+
+      const json = await profileRes.json();
+      const user = json && json.data && json.data.user;
+      if (!user || typeof user !== "object") {
+        sendResult({
+          requestId,
+          ok: false,
+          handle: cleanHandle,
+          note: "Could not read profile data from Instagram.",
+          needsLogin: false,
+        });
+        return;
+      }
+
+      const isPrivate = typeof user.is_private === "boolean" ? user.is_private : null;
+      const followersCount =
+        user.edge_followed_by && typeof user.edge_followed_by.count === "number"
+          ? user.edge_followed_by.count
+          : null;
+      const timeline = user.edge_owner_to_timeline_media;
+      const postsCount = timeline && typeof timeline.count === "number" ? timeline.count : null;
+      const edges = timeline && Array.isArray(timeline.edges) ? timeline.edges : [];
+
+      // Pick the newest timestamp across the top 6 posts so pinned posts don't fool it
+      let newestTsSec = null;
+      let newestCaption = null;
+      for (const edge of edges.slice(0, 6)) {
+        const ts = edge && edge.node && edge.node.taken_at_timestamp;
+        if (typeof ts === "number" && Number.isFinite(ts) && (newestTsSec === null || ts > newestTsSec)) {
+          newestTsSec = ts;
+          const cap =
+            edge.node.edge_media_to_caption &&
+            Array.isArray(edge.node.edge_media_to_caption.edges) &&
+            edge.node.edge_media_to_caption.edges[0] &&
+            edge.node.edge_media_to_caption.edges[0].node &&
+            edge.node.edge_media_to_caption.edges[0].node.text;
+          newestCaption = typeof cap === "string" && cap.trim()
+            ? cap.trim().replace(/\s+/g, " ").slice(0, 140)
+            : null;
+        }
+      }
+
+      const nowMs = Date.now();
+      const lastPostAt = newestTsSec ? new Date(newestTsSec * 1000).toISOString() : null;
+      const lastPostDaysAgo = newestTsSec
+        ? Math.max(0, Math.floor((nowMs - newestTsSec * 1000) / 86400000))
+        : null;
+
+      // Live Story check via authenticated Reels media endpoint
+      let hasActiveStory = null;
+      if (typeof user.latest_reel_media === "number" && user.latest_reel_media > 0) {
+        const ageSec = Math.floor(nowMs / 1000) - user.latest_reel_media;
+        hasActiveStory = ageSec >= 0 && ageSec <= 86400;
+      }
+
+      if (hasActiveStory === null && user.id) {
+        try {
+          const reelRes = await fetch(
+            `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(String(user.id))}`,
+            { method: "GET", credentials: "include", headers }
+          );
+          if (reelRes.ok) {
+            const reelJson = await reelRes.json();
+            const reelsArr = Array.isArray(reelJson && reelJson.reels_media)
+              ? reelJson.reels_media
+              : [];
+            const firstReel = reelsArr[0] || (reelJson && reelJson.reels && reelJson.reels[String(user.id)]);
+            const items = firstReel && Array.isArray(firstReel.items) ? firstReel.items : [];
+            hasActiveStory = items.length > 0;
+          }
+        } catch (_) {
+          // Leave hasActiveStory null if story endpoint unavailable
+        }
+      }
+
+      const bio =
+        typeof user.biography === "string" && user.biography.trim()
+          ? user.biography.trim().slice(0, 220)
+          : null;
+
+      sendResult({
+        requestId,
+        ok: true,
+        handle: cleanHandle,
+        lastPostDaysAgo,
+        lastPostAt,
+        lastPostCaption: newestCaption,
+        hasActiveStory,
+        followersCount,
+        postsCount,
+        isPrivate,
+        bio,
+        note: null,
+        needsLogin: false,
+      });
+    } catch (err) {
+      sendResult({
+        requestId,
+        ok: false,
+        handle: cleanHandle,
+        note: "Could not check Instagram right now — try again.",
+        needsLogin: false,
+      });
+    }
+  };
+
   function scheduleScan() {
     if (scanTimer) clearTimeout(scanTimer);
     scanTimer = setTimeout(() => scanVisibleThreads(false), 1200);
@@ -883,6 +1079,121 @@ pub fn handle_ig_watcher_report(
     );
 
     status
+}
+
+pub fn handle_ig_profile_check_report(
+    watcher_state: &IgWatcherState,
+    payload: IgProfileCheckPayload,
+) {
+    if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
+        if let Some(tx) = pending.remove(&payload.request_id) {
+            let _ = tx.send(payload);
+        }
+    }
+}
+
+pub async fn run_ig_profile_check(
+    app: &AppHandle,
+    watcher_state: &IgWatcherState,
+    raw_handle: String,
+) -> IgProfileCheckPayload {
+    let clean_handle = raw_handle
+        .trim()
+        .trim_start_matches('@')
+        .to_lowercase();
+
+    let empty_err = |note: &str, needs_login: bool| IgProfileCheckPayload {
+        request_id: String::new(),
+        ok: false,
+        handle: clean_handle.clone(),
+        last_post_days_ago: None,
+        last_post_at: None,
+        last_post_caption: None,
+        has_active_story: None,
+        followers_count: None,
+        posts_count: None,
+        is_private: None,
+        bio: None,
+        note: Some(note.to_string()),
+        needs_login,
+    };
+
+    if clean_handle.is_empty()
+        || clean_handle.len() > 64
+        || !clean_handle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+    {
+        return empty_err("Invalid Instagram handle.", false);
+    }
+
+    // Ensure background IG watcher window exists if user previously connected IG
+    let (is_connected, is_enabled) = watcher_state
+        .inner
+        .lock()
+        .map(|g| (g.connected, g.enabled))
+        .unwrap_or((false, false));
+
+    if app.get_webview_window(IG_WATCHER_LABEL).is_none() {
+        if is_connected || is_enabled {
+            let _ = create_or_show_watcher(app, watcher_state, false, false);
+            // Give the background webview a brief moment to boot instagram.com
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_millis(2200));
+            })
+            .await;
+        } else {
+            return empty_err(
+                "Connect Instagram once to check last post & live stories.",
+                true,
+            );
+        }
+    }
+
+    let Some(win) = app.get_webview_window(IG_WATCHER_LABEL) else {
+        return empty_err(
+            "Connect Instagram once to check last post & live stories.",
+            true,
+        );
+    };
+
+    let request_id = format!("igchk_{}_{}", now_epoch_ms(), clean_handle);
+    let (tx, rx) = mpsc::channel::<IgProfileCheckPayload>();
+
+    if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
+        pending.insert(request_id.clone(), tx);
+    }
+
+    let req_json = serde_json::to_string(&request_id).unwrap_or_else(|_| "\"\"".to_string());
+    let handle_json = serde_json::to_string(&clean_handle).unwrap_or_else(|_| "\"\"".to_string());
+    let js = format!(
+        "if (typeof window.__mastIgCheckProfile === 'function') {{ window.__mastIgCheckProfile({}, {}); }} else {{ try {{ window.__TAURI_INTERNALS__.invoke('report_ig_profile_check', {{ payload: {{ requestId: {}, ok: false, handle: {}, note: 'Instagram session still loading — try clicking Check IG again in 2 seconds.', needsLogin: false }} }}); }} catch (_) {{}} }}",
+        req_json, handle_json, req_json, handle_json
+    );
+
+    if win.eval(&js).is_err() {
+        if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
+            pending.remove(&request_id);
+        }
+        return empty_err("Could not reach Instagram session — try again.", false);
+    }
+
+    let received = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(Duration::from_secs(10))
+    })
+    .await;
+
+    if let Ok(mut pending) = watcher_state.pending_profile_checks.lock() {
+        pending.remove(&request_id);
+    }
+
+    match received {
+        Ok(Ok(payload)) => payload,
+        _ => empty_err(
+            "Instagram check timed out — make sure Instagram is connected and try again.",
+            !is_connected,
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -17,10 +17,11 @@ commands.allow = [
   "open_ig_watcher",
   "ensure_ig_watcher_background",
   "refresh_ig_watcher",
-  "disconnect_ig_watcher"
+  "disconnect_ig_watcher",
+  "check_ig_profile_desktop"
 ]
 
 [[permission]]
 identifier = "allow-ig-watcher-report"
 description = "Allows only the isolated Instagram watcher webview to forward observed unread DM summaries"
-commands.allow = ["report_ig_watcher_state"]
+commands.allow = ["report_ig_watcher_state", "report_ig_profile_check"]

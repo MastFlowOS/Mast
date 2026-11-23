@@ -801,19 +801,65 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
         headers["x-csrftoken"] = csrf;
       }
 
-      const controller = new AbortController();
-      const fetchTimer = setTimeout(() => controller.abort(), 7500);
-      let profileRes;
-      try {
-        profileRes = await fetch(
-          `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanHandle)}`,
-          { method: "GET", credentials: "include", headers, signal: controller.signal }
-        );
-      } finally {
-        clearTimeout(fetchTimer);
-      }
+      const fetchJson = async (url, timeoutMs = 4500) => {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, {
+            method: "GET",
+            credentials: "include",
+            headers,
+            signal: ctrl.signal,
+          });
+          if (res.status === 401 || res.status === 403) {
+            return { status: res.status, data: null, unauthorized: true };
+          }
+          if (!res.ok) {
+            return { status: res.status, data: null, unauthorized: false };
+          }
+          const txt = await res.text();
+          return { status: res.status, data: JSON.parse(stripXssi(txt)), unauthorized: false };
+        } catch (_) {
+          return { status: 0, data: null, unauthorized: false };
+        } finally {
+          clearTimeout(t);
+        }
+      };
 
-      if (profileRes.status === 401 || profileRes.status === 403) {
+      let userId = null;
+      let isPrivate = null;
+      let followersCount = null;
+      let postsCount = null;
+      let newestTsSec = null;
+      let newestCaption = null;
+      let hasActiveStory = null;
+      let bio = null;
+      const nowMs = Date.now();
+
+      const considerPostTs = (ts, cap) => {
+        if (typeof ts === "number" && Number.isFinite(ts) && ts > 1_000_000_000) {
+          if (newestTsSec === null || ts > newestTsSec) {
+            newestTsSec = ts;
+            if (typeof cap === "string" && cap.trim()) {
+              newestCaption = cap.trim().replace(/\s+/g, " ").slice(0, 140);
+            }
+          }
+        }
+      };
+
+      const checkReelTs = (reelTs) => {
+        if (typeof reelTs === "number" && reelTs > 0) {
+          const ageSec = Math.floor(nowMs / 1000) - reelTs;
+          hasActiveStory = ageSec >= 0 && ageSec <= 86400;
+        }
+      };
+
+      // Tier 1: web_profile_info (single call when Instagram allows it)
+      const wp = await fetchJson(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanHandle)}`,
+        4500
+      );
+      if (wp.unauthorized) {
         sendResult({
           requestId,
           ok: false,
@@ -824,106 +870,179 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
         return;
       }
 
-      if (!profileRes.ok) {
-        sendResult({
-          requestId,
-          ok: false,
-          handle: cleanHandle,
-          note: profileRes.status === 404
-            ? "Instagram account not found (handle may have changed)."
-            : `Instagram returned status ${profileRes.status}. Try again shortly.`,
-          needsLogin: false,
-        });
-        return;
-      }
-
-      const profileText = await profileRes.text();
-      const json = JSON.parse(stripXssi(profileText));
-      const user = json && json.data && json.data.user;
-      if (!user || typeof user !== "object") {
-        sendResult({
-          requestId,
-          ok: false,
-          handle: cleanHandle,
-          note: "Could not read profile data from Instagram.",
-          needsLogin: false,
-        });
-        return;
-      }
-
-      const isPrivate = typeof user.is_private === "boolean" ? user.is_private : null;
-      const followersCount =
-        user.edge_followed_by && typeof user.edge_followed_by.count === "number"
-          ? user.edge_followed_by.count
-          : null;
-      const timeline = user.edge_owner_to_timeline_media;
-      const postsCount = timeline && typeof timeline.count === "number" ? timeline.count : null;
-      const edges = timeline && Array.isArray(timeline.edges) ? timeline.edges : [];
-
-      // Pick the newest timestamp across the top 6 posts so pinned posts don't fool it
-      let newestTsSec = null;
-      let newestCaption = null;
-      for (const edge of edges.slice(0, 6)) {
-        const ts = edge && edge.node && edge.node.taken_at_timestamp;
-        if (typeof ts === "number" && Number.isFinite(ts) && (newestTsSec === null || ts > newestTsSec)) {
-          newestTsSec = ts;
+      const wpUser = wp.data && wp.data.data && wp.data.data.user;
+      if (wpUser && typeof wpUser === "object") {
+        userId = wpUser.id ? String(wpUser.id) : null;
+        isPrivate = typeof wpUser.is_private === "boolean" ? wpUser.is_private : null;
+        if (wpUser.edge_followed_by && typeof wpUser.edge_followed_by.count === "number") {
+          followersCount = wpUser.edge_followed_by.count;
+        }
+        const timeline = wpUser.edge_owner_to_timeline_media;
+        if (timeline && typeof timeline.count === "number") {
+          postsCount = timeline.count;
+        }
+        const edges = timeline && Array.isArray(timeline.edges) ? timeline.edges : [];
+        for (const edge of edges.slice(0, 6)) {
+          const ts = edge && edge.node && edge.node.taken_at_timestamp;
           const cap =
+            edge &&
+            edge.node &&
             edge.node.edge_media_to_caption &&
             Array.isArray(edge.node.edge_media_to_caption.edges) &&
             edge.node.edge_media_to_caption.edges[0] &&
             edge.node.edge_media_to_caption.edges[0].node &&
             edge.node.edge_media_to_caption.edges[0].node.text;
-          newestCaption = typeof cap === "string" && cap.trim()
-            ? cap.trim().replace(/\s+/g, " ").slice(0, 140)
-            : null;
+          considerPostTs(ts, cap);
+        }
+        checkReelTs(wpUser.latest_reel_media);
+        if (typeof wpUser.biography === "string" && wpUser.biography.trim()) {
+          bio = wpUser.biography.trim().slice(0, 220);
         }
       }
 
-      const nowMs = Date.now();
+      // Tier 2: Instagram's active logged-in search + user feed APIs (works even when web_profile_info returns 404)
+      if (!userId) {
+        const searchUrls = [
+          `https://www.instagram.com/api/v1/web/search/topsearch/?context=blended&query=${encodeURIComponent(cleanHandle)}`,
+          `https://www.instagram.com/api/v1/users/search/?q=${encodeURIComponent(cleanHandle)}&count=5`,
+        ];
+        for (const sUrl of searchUrls) {
+          const sRes = await fetchJson(sUrl, 4000);
+          if (sRes.unauthorized) {
+            sendResult({
+              requestId,
+              ok: false,
+              handle: cleanHandle,
+              note: "Instagram session expired — click Connect IG to sign back in.",
+              needsLogin: true,
+            });
+            return;
+          }
+          const rawUsers = Array.isArray(sRes.data && sRes.data.users) ? sRes.data.users : [];
+          for (const entry of rawUsers) {
+            const u = (entry && entry.user) || entry;
+            if (u && typeof u.username === "string" && u.username.toLowerCase() === cleanHandle) {
+              userId = u.pk || u.id ? String(u.pk || u.id) : null;
+              if (typeof u.is_private === "boolean") isPrivate = u.is_private;
+              if (typeof u.follower_count === "number") followersCount = u.follower_count;
+              checkReelTs(u.latest_reel_media);
+              break;
+            }
+          }
+          if (userId) break;
+        }
+      }
+
+      // Fetch recent posts via feed API if we don't have lastPost yet
+      if (newestTsSec === null && (userId || cleanHandle)) {
+        const feedUrl = userId
+          ? `https://www.instagram.com/api/v1/feed/user/${encodeURIComponent(userId)}/?count=6`
+          : `https://www.instagram.com/api/v1/feed/user/${encodeURIComponent(cleanHandle)}/username/?count=6`;
+        const feedRes = await fetchJson(feedUrl, 4500);
+        const items = Array.isArray(feedRes.data && feedRes.data.items) ? feedRes.data.items : [];
+        for (const item of items.slice(0, 6)) {
+          const ts = item && (item.taken_at || item.taken_at_timestamp);
+          const cap = item && item.caption && item.caption.text;
+          considerPostTs(ts, cap);
+          if (!userId && item && item.user && (item.user.pk || item.user.id)) {
+            userId = String(item.user.pk || item.user.id);
+          }
+        }
+        if (postsCount === null && typeof (feedRes.data && feedRes.data.num_results) === "number" && feedRes.data.num_results === 0) {
+          postsCount = 0;
+        }
+      }
+
+      // Fetch follower/post counts & bio via users/<id>/info if missing
+      if (userId && (followersCount === null || postsCount === null)) {
+        const infoRes = await fetchJson(
+          `https://www.instagram.com/api/v1/users/${encodeURIComponent(userId)}/info/`,
+          3500
+        );
+        const infoUser = infoRes.data && infoRes.data.user;
+        if (infoUser && typeof infoUser === "object") {
+          if (typeof infoUser.follower_count === "number") followersCount = infoUser.follower_count;
+          if (typeof infoUser.media_count === "number") postsCount = infoUser.media_count;
+          if (typeof infoUser.is_private === "boolean") isPrivate = infoUser.is_private;
+          if (!bio && typeof infoUser.biography === "string" && infoUser.biography.trim()) {
+            bio = infoUser.biography.trim().slice(0, 220);
+          }
+          if (hasActiveStory === null) checkReelTs(infoUser.latest_reel_media);
+        }
+      }
+
+      // Live Story check via authenticated Reels media endpoint
+      if (hasActiveStory === null && userId) {
+        const reelRes = await fetchJson(
+          `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(userId)}`,
+          3500
+        );
+        if (reelRes.data) {
+          const reelsArr = Array.isArray(reelRes.data.reels_media) ? reelRes.data.reels_media : [];
+          const firstReel =
+            reelsArr[0] || (reelRes.data.reels && reelRes.data.reels[userId]);
+          const items = firstReel && Array.isArray(firstReel.items) ? firstReel.items : [];
+          hasActiveStory = items.length > 0;
+        }
+      }
+
+      // Tier 3: Direct logged-in profile page HTML fallback if APIs returned nothing
+      if (!userId && newestTsSec === null && followersCount === null) {
+        try {
+          const htmlCtrl = new AbortController();
+          const htmlTimer = setTimeout(() => htmlCtrl.abort(), 4500);
+          let htmlRes;
+          try {
+            htmlRes = await fetch(`https://www.instagram.com/${encodeURIComponent(cleanHandle)}/`, {
+              method: "GET",
+              credentials: "include",
+              signal: htmlCtrl.signal,
+            });
+          } finally {
+            clearTimeout(htmlTimer);
+          }
+          if (htmlRes.status === 404) {
+            sendResult({
+              requestId,
+              ok: false,
+              handle: cleanHandle,
+              note: "Instagram account not found (handle may have changed).",
+              needsLogin: false,
+            });
+            return;
+          }
+          if (htmlRes.ok) {
+            const html = await htmlRes.text();
+            const tsMatches = html.matchAll(/"taken_at(?:_timestamp)?"\s*:\s*(\d{10})/g);
+            for (const m of tsMatches) {
+              considerPostTs(Number(m[1]), null);
+            }
+          }
+        } catch (_) {}
+      }
+
+      const gotAnySignal =
+        userId !== null ||
+        newestTsSec !== null ||
+        followersCount !== null ||
+        postsCount !== null ||
+        hasActiveStory !== null;
+
+      if (!gotAnySignal) {
+        sendResult({
+          requestId,
+          ok: false,
+          handle: cleanHandle,
+          note: "Could not read Instagram activity right now — click Open IG to check directly.",
+          needsLogin: false,
+        });
+        return;
+      }
+
       const lastPostAt = newestTsSec ? new Date(newestTsSec * 1000).toISOString() : null;
       const lastPostDaysAgo = newestTsSec
         ? Math.max(0, Math.floor((nowMs - newestTsSec * 1000) / 86400000))
         : null;
-
-      // Live Story check via authenticated Reels media endpoint
-      let hasActiveStory = null;
-      if (typeof user.latest_reel_media === "number" && user.latest_reel_media > 0) {
-        const ageSec = Math.floor(nowMs / 1000) - user.latest_reel_media;
-        hasActiveStory = ageSec >= 0 && ageSec <= 86400;
-      }
-
-      if (hasActiveStory === null && user.id) {
-        try {
-          const reelController = new AbortController();
-          const reelTimer = setTimeout(() => reelController.abort(), 3500);
-          let reelRes;
-          try {
-            reelRes = await fetch(
-              `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(String(user.id))}`,
-              { method: "GET", credentials: "include", headers, signal: reelController.signal }
-            );
-          } finally {
-            clearTimeout(reelTimer);
-          }
-          if (reelRes.ok) {
-            const reelText = await reelRes.text();
-            const reelJson = JSON.parse(stripXssi(reelText));
-            const reelsArr = Array.isArray(reelJson && reelJson.reels_media)
-              ? reelJson.reels_media
-              : [];
-            const firstReel = reelsArr[0] || (reelJson && reelJson.reels && reelJson.reels[String(user.id)]);
-            const items = firstReel && Array.isArray(firstReel.items) ? firstReel.items : [];
-            hasActiveStory = items.length > 0;
-          }
-        } catch (_) {
-          // Leave hasActiveStory null if story endpoint unavailable
-        }
-      }
-
-      const bio =
-        typeof user.biography === "string" && user.biography.trim()
-          ? user.biography.trim().slice(0, 220)
-          : null;
 
       sendResult({
         requestId,
@@ -1201,7 +1320,7 @@ pub async fn run_ig_profile_check(
     }
 
     let received = tauri::async_runtime::spawn_blocking(move || {
-        rx.recv_timeout(Duration::from_secs(10))
+        rx.recv_timeout(Duration::from_secs(16))
     })
     .await;
 

@@ -768,38 +768,50 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
       } catch (_) {}
     };
 
-    if (!cleanHandle) {
-      sendResult({
-        requestId,
-        ok: false,
-        handle: "",
-        note: "Invalid Instagram handle.",
-        needsLogin: false,
-      });
-      return;
-    }
-
-    if (isLoginOrChallengePage()) {
-      sendResult({
-        requestId,
-        ok: false,
-        handle: cleanHandle,
-        note: "Connect your Instagram account once to check posts & stories live.",
-        needsLogin: true,
-      });
-      return;
-    }
-
     try {
+      if (!cleanHandle) {
+        sendResult({
+          requestId,
+          ok: false,
+          handle: "",
+          note: "Invalid Instagram handle.",
+          needsLogin: false,
+        });
+        return;
+      }
+
+      if (isLoginOrChallenge()) {
+        sendResult({
+          requestId,
+          ok: false,
+          handle: cleanHandle,
+          note: "Connect your Instagram account once to check posts & stories live.",
+          needsLogin: true,
+        });
+        return;
+      }
+
+      const csrf = getCookie("csrftoken");
       const headers = {
         "x-ig-app-id": "936619743392459",
         "x-requested-with": "XMLHttpRequest",
         Accept: "application/json, text/plain, */*",
       };
-      const profileRes = await fetch(
-        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanHandle)}`,
-        { method: "GET", credentials: "include", headers }
-      );
+      if (csrf) {
+        headers["x-csrftoken"] = csrf;
+      }
+
+      const controller = new AbortController();
+      const fetchTimer = setTimeout(() => controller.abort(), 7500);
+      let profileRes;
+      try {
+        profileRes = await fetch(
+          `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(cleanHandle)}`,
+          { method: "GET", credentials: "include", headers, signal: controller.signal }
+        );
+      } finally {
+        clearTimeout(fetchTimer);
+      }
 
       if (profileRes.status === 401 || profileRes.status === 403) {
         sendResult({
@@ -825,7 +837,8 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
         return;
       }
 
-      const json = await profileRes.json();
+      const profileText = await profileRes.text();
+      const json = JSON.parse(stripXssi(profileText));
       const user = json && json.data && json.data.user;
       if (!user || typeof user !== "object") {
         sendResult({
@@ -881,12 +894,20 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
 
       if (hasActiveStory === null && user.id) {
         try {
-          const reelRes = await fetch(
-            `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(String(user.id))}`,
-            { method: "GET", credentials: "include", headers }
-          );
+          const reelController = new AbortController();
+          const reelTimer = setTimeout(() => reelController.abort(), 3500);
+          let reelRes;
+          try {
+            reelRes = await fetch(
+              `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(String(user.id))}`,
+              { method: "GET", credentials: "include", headers, signal: reelController.signal }
+            );
+          } finally {
+            clearTimeout(reelTimer);
+          }
           if (reelRes.ok) {
-            const reelJson = await reelRes.json();
+            const reelText = await reelRes.text();
+            const reelJson = JSON.parse(stripXssi(reelText));
             const reelsArr = Array.isArray(reelJson && reelJson.reels_media)
               ? reelJson.reels_media
               : [];
@@ -920,11 +941,12 @@ pub const IG_WATCHER_INIT_SCRIPT: &str = r#"
         needsLogin: false,
       });
     } catch (err) {
+      const errMsg = err && err.message ? String(err.message).slice(0, 100) : "unknown error";
       sendResult({
         requestId,
         ok: false,
         handle: cleanHandle,
-        note: "Could not check Instagram right now — try again.",
+        note: `Could not check Instagram right now (${errMsg}).`,
         needsLogin: false,
       });
     }

@@ -54,6 +54,8 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion, onIns
   const runAudit = useRunLeadWebsiteAudit(lead.id);
 
   const [investigationResult, setInvestigationResult] = useState<InvestigateLeadResult | null>(null);
+  const [investigateError, setInvestigateError] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [copiedAudit, setCopiedAudit] = useState(false);
   const [previewExpanded, setPreviewExpanded] = useState(false);
 
@@ -61,17 +63,22 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion, onIns
 
   useEffect(() => {
     setInvestigationResult(null);
+    setInvestigateError(null);
+    setAuditError(null);
     setCopiedAudit(false);
     setPreviewExpanded(false);
   }, [lead.id]);
 
   const handleRunWebsiteAudit = async () => {
     if (runAudit.isPending) return;
+    setAuditError(null);
     try {
       await runAudit.mutateAsync({});
       toast.success("Website preview & mini audit ready");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not run website audit");
+      const msg = err instanceof Error ? err.message : "Could not run website audit";
+      setAuditError(msg);
+      toast.error(msg);
     }
   };
 
@@ -109,11 +116,14 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion, onIns
   const runInvestigation = async (questionText: string) => {
     const trimmed = questionText.trim();
     if (!trimmed || investigate.isPending) return;
+    setInvestigateError(null);
     try {
       const res = await investigate.mutateAsync({ leadId: lead.id, question: trimmed });
       setInvestigationResult(res);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not run investigation");
+      const msg = err instanceof Error ? err.message : "Could not run investigation";
+      setInvestigateError(msg);
+      toast.error(msg);
     }
   };
 
@@ -179,6 +189,12 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion, onIns
         </div>
 
         {/* Honest data-source notice */}
+        {investigateError && (
+          <p className="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/25 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+            <AlertTriangle className="size-3 text-rose-400 shrink-0" />
+            <span>{investigateError}</span>
+          </p>
+        )}
         <div className="p-2 rounded-lg border border-indigo-500/20 bg-indigo-500/5 text-[10px] space-y-0.5 text-foreground/90">
           <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
             <Info className="size-3 text-indigo-400 shrink-0" />
@@ -296,6 +312,13 @@ export function ResearchTab({ lead, researchQuestion, setResearchQuestion, onIns
             )}
           </Button>
         </div>
+
+        {auditError && (
+          <p className="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/25 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+            <AlertTriangle className="size-3 text-rose-400 shrink-0" />
+            <span>{auditError}</span>
+          </p>
+        )}
 
         {!websiteAudit && !runAudit.isPending && (
           <p className="text-[11px] text-muted-foreground leading-relaxed">

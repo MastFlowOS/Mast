@@ -15,6 +15,8 @@ import {
   MessageSquareReply,
   Ban,
   AlertTriangle,
+  AlertCircle,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +61,7 @@ interface CenterWorkspaceProps {
   setTone: (v: string) => void;
   onGenerate: () => Promise<void>;
   isGenerating: boolean;
+  generateStatus?: { tone: "success" | "error"; text: string; id: number } | null;
   onRewrite: (type?: "rewrite" | "expand" | "shorten") => Promise<void>;
 }
 
@@ -91,10 +94,15 @@ export function CenterWorkspace({
   setTone,
   onGenerate,
   isGenerating,
+  generateStatus,
   onRewrite,
 }: CenterWorkspaceProps) {
   const [copied, setCopied] = useState(false);
   const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [inlineStatus, setInlineStatus] = useState<{
+    tone: "success" | "error" | "warning";
+    text: string;
+  } | null>(null);
   const sendEmail = useSendLeadEmail();
   const recordActivity = useRecordLeadActivity();
   const safetyQuery = useLeadSafetyCheck(lead.id);
@@ -135,10 +143,24 @@ export function CenterWorkspace({
   const replyIntent = typeof latestReplyMeta?.intent === "string" ? latestReplyMeta.intent : null;
   const suggestedReply = typeof latestReplyMeta?.suggestedReply === "string" ? latestReplyMeta.suggestedReply : null;
 
-  // Close the bottom action menu when switching leads or channels to prevent orphaned menus
+  // Close the bottom action menu and clear status when switching leads or channels
   useEffect(() => {
     setSendMenuOpen(false);
+    setInlineStatus(null);
   }, [lead.id, channel]);
+
+  // Sync generation status from parent into inline feedback
+  useEffect(() => {
+    if (!generateStatus) return;
+    setInlineStatus({ tone: generateStatus.tone, text: generateStatus.text });
+  }, [generateStatus]);
+
+  // Auto-fade success messages after 4.5s; keep errors visible until next action or dismiss
+  useEffect(() => {
+    if (!inlineStatus || inlineStatus.tone !== "success") return;
+    const timer = window.setTimeout(() => setInlineStatus(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [inlineStatus]);
 
   // Word and character count calculated from clean text
   const plainText = htmlToPlainText(body);
@@ -208,6 +230,7 @@ export function CenterWorkspace({
     });
 
     if (!popupResult.opened && popupResult.url) {
+      setInlineStatus({ tone: "warning", text: "Popup blocked — allow popups or try again." });
       toast.info("Popup blocked. Click below to open Gmail.", {
         action: {
           label: "Open Gmail",
@@ -215,6 +238,7 @@ export function CenterWorkspace({
         },
       });
     } else {
+      setInlineStatus({ tone: "success", text: "Gmail opened" });
       toast.success("Opening Gmail popup…");
     }
 
@@ -302,6 +326,7 @@ export function CenterWorkspace({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
       if (!popupResult.opened) {
+        setInlineStatus({ tone: "warning", text: "Message copied — popup blocked, click Open Instagram again." });
         toast.info("Message copied! Your browser blocked opening Instagram automatically.", {
           action: {
             label: "Open Instagram",
@@ -309,9 +334,11 @@ export function CenterWorkspace({
           },
         });
       } else {
+        setInlineStatus({ tone: "success", text: "Copied & opened Instagram DM" });
         toast.success("Message copied to clipboard · Opening Instagram DM…");
       }
     } else if (messageText) {
+      setInlineStatus({ tone: "warning", text: "Opened Instagram — use Copy Message to copy manually." });
       toast.warning("Opening Instagram DM. Could not access clipboard; use 'Copy Message' to copy manually.", {
         action: {
           label: "Copy Message",
@@ -319,6 +346,7 @@ export function CenterWorkspace({
         },
       });
     } else {
+      setInlineStatus({ tone: "success", text: "Opened Instagram DM" });
       toast.info("Opening Instagram DM…");
     }
 
@@ -376,39 +404,49 @@ export function CenterWorkspace({
       } catch {
         // Non-critical: opening website must not fail merely because activity persistence failed
       }
+      setInlineStatus({ tone: "success", text: didCopy ? "Draft copied · Website opened" : "Website opened" });
       toast.success(didCopy ? "Draft copied · Opening website…" : "Opening website…");
     }
   };
 
   const handleSendConnected = async () => {
     if (!lead.email) {
+      setInlineStatus({ tone: "error", text: "No email address on file for this lead." });
       toast.error("No email address recorded for this lead");
       return;
     }
     if (!subject.trim() || !plainText.trim()) {
+      setInlineStatus({ tone: "error", text: "Add both a subject line and message body first." });
       toast.error("Please provide both subject and body");
       return;
     }
 
+    setInlineStatus(null);
     try {
       const res = await sendEmail.mutateAsync({ leadId: lead.id, body: { subject, body } });
       if (res?.warning) {
+        setInlineStatus({ tone: "warning", text: res.warning });
         toast.warning(res.warning);
       } else {
+        setInlineStatus({ tone: "success", text: `Email sent to ${lead.email}` });
         toast.success("Email sent successfully");
       }
     } catch (error) {
       if (isMissingBackendEndpoint(error)) {
         await handleOpenGmail();
+        setInlineStatus({ tone: "warning", text: "Connected email unavailable — opened Gmail instead." });
         toast.info("Connected email unavailable; opened Gmail instead.");
         return;
       }
-      toast.error(error instanceof Error ? error.message : "Failed to send email");
+      const errMsg = error instanceof Error ? error.message : "Failed to send email";
+      setInlineStatus({ tone: "error", text: errMsg });
+      toast.error(errMsg);
     }
   };
 
   const handleMarkSent = async () => {
     const sentAt = new Date().toISOString();
+    setInlineStatus(null);
     try {
       await recordActivity.mutateAsync({
         lead,
@@ -440,9 +478,15 @@ export function CenterWorkspace({
           lastContactedAt: sentAt,
         },
       });
+      setInlineStatus({
+        tone: "success",
+        text: channel === "phone" ? "Marked as called" : "Marked as sent",
+      });
       toast.success("Marked as sent");
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "Could not mark as sent");
+      const errMsg = error instanceof ApiError ? error.message : "Could not mark as sent";
+      setInlineStatus({ tone: "error", text: errMsg });
+      toast.error(errMsg);
     }
   };
 
@@ -765,6 +809,40 @@ export function CenterWorkspace({
           </div>
         </div>
       </div>
+
+      {/* Inline action feedback (replaces noisy toasts without touching Dynamic Island) */}
+      {inlineStatus && (
+        <div
+          data-testid="composer-inline-status"
+          role={inlineStatus.tone === "error" ? "alert" : "status"}
+          className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-xs ${
+            inlineStatus.tone === "error"
+              ? "border-rose-500/35 bg-rose-500/10 text-rose-200"
+              : inlineStatus.tone === "warning"
+                ? "border-amber-500/35 bg-amber-500/10 text-amber-200"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {inlineStatus.tone === "error" ? (
+              <AlertCircle className="size-3.5 text-rose-400 shrink-0" />
+            ) : inlineStatus.tone === "warning" ? (
+              <AlertTriangle className="size-3.5 text-amber-400 shrink-0" />
+            ) : (
+              <CheckCircle className="size-3.5 text-emerald-400 shrink-0" />
+            )}
+            <span className="truncate font-medium">{inlineStatus.text}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setInlineStatus(null)}
+            aria-label="Dismiss status"
+            className="text-current/60 hover:text-current transition-colors shrink-0 cursor-pointer"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
     </main>
   );
 }

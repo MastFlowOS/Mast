@@ -62,6 +62,11 @@ function LeadWorkspace() {
   const [loadedLeadId, setLoadedLeadId] = useState<number | null>(null);
   const [aiAssistantOpen, setAiAssistantOpen] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generateStatus, setGenerateStatus] = useState<{
+    tone: "success" | "error";
+    text: string;
+    id: number;
+  } | null>(null);
 
   const activeDraft = drafts[channel];
   const senderName = settings?.senderName ?? auth?.user?.fullName ?? "";
@@ -83,6 +88,7 @@ function LeadWorkspace() {
     if (!lead || lead.id === loadedLeadId) return;
     setLoadedLeadId(lead.id);
     setDrafts(emptyDrafts);
+    setGenerateStatus(null);
   }, [lead, loadedLeadId]);
 
   const setSubject = (subject: string) => {
@@ -112,6 +118,7 @@ function LeadWorkspace() {
   const handleGenerate = async () => {
     if (!lead || isGenerating) return;
     setIsGenerating(true);
+    setGenerateStatus(null);
     const currentLeadId = lead.id;
 
     try {
@@ -134,8 +141,10 @@ function LeadWorkspace() {
         const next = normalizeDraftResponse(response);
         if (next.body) {
           handleInsert(next.body, next.subject);
+          setGenerateStatus({ tone: "success", text: "AI draft generated", id: Date.now() });
           toast.success("AI draft generated");
         } else {
+          setGenerateStatus({ tone: "error", text: "AI returned an empty message. Try again.", id: Date.now() });
           toast.error("AI response returned an empty message body");
         }
       } else {
@@ -145,6 +154,7 @@ function LeadWorkspace() {
         if (activeLeadIdRef.current !== currentLeadId) return;
 
         if (!result.ok) {
+          setGenerateStatus({ tone: "error", text: result.detail, id: Date.now() });
           toast.error(result.detail);
           return;
         }
@@ -160,18 +170,20 @@ function LeadWorkspace() {
             metadata: { template: templateKey, angleComponent: result.angleComponent, angleSource: result.angleSource },
           },
         });
+        setGenerateStatus({ tone: "success", text: "Draft generated", id: Date.now() });
         toast.success("Draft generated");
       }
     } catch (error: any) {
       if (activeLeadIdRef.current !== currentLeadId) return;
       let msg = error instanceof Error ? error.message : "Could not generate draft";
       if (error?.status === 429 || msg.includes("rate limit") || msg.includes("429")) {
-        msg = "AI request rate-limited. Please wait a moment and try again.";
+        msg = "AI rate-limited — wait a moment and try again.";
       } else if (error?.status === 504 || msg.includes("timeout")) {
-        msg = "AI generation timed out. Please try again.";
+        msg = "AI generation timed out — click Generate to retry.";
       } else if (error?.status === 503 || msg.includes("not configured")) {
-        msg = "AI service is currently unavailable. Please try again shortly.";
+        msg = "AI service unavailable right now — try again shortly.";
       }
+      setGenerateStatus({ tone: "error", text: msg, id: Date.now() });
       toast.error(msg);
     } finally {
       setIsGenerating(false);
@@ -181,10 +193,12 @@ function LeadWorkspace() {
   const handleRewrite = async (type: "rewrite" | "expand" | "shorten" = "rewrite") => {
     if (!lead || isGenerating) return;
     if (!activeDraft.body.trim()) {
+      setGenerateStatus({ tone: "error", text: "Add a message before rewriting", id: Date.now() });
       toast.error("Add a message before rewriting");
       return;
     }
     setIsGenerating(true);
+    setGenerateStatus(null);
     const currentLeadId = lead.id;
     const instruction =
       type === "expand"
@@ -213,16 +227,19 @@ function LeadWorkspace() {
       const next = normalizeDraftResponse(response);
       if (next.body) {
         handleInsert(next.body, next.subject);
-        toast.success(type === "expand" ? "Draft expanded" : type === "shorten" ? "Draft shortened" : "Draft rewritten");
+        const label = type === "expand" ? "Draft expanded" : type === "shorten" ? "Draft shortened" : "Draft rewritten";
+        setGenerateStatus({ tone: "success", text: label, id: Date.now() });
+        toast.success(label);
       }
     } catch (error: any) {
       if (lead.id !== currentLeadId) return;
       let msg = error instanceof Error ? error.message : "Could not rewrite draft";
       if (error?.status === 429 || msg.includes("rate limit") || msg.includes("429")) {
-        msg = "AI request rate-limited. Please wait a moment and try again.";
+        msg = "AI rate-limited — wait a moment and try again.";
       } else if (error?.status === 504 || msg.includes("timeout")) {
-        msg = "AI generation timed out. Please try again.";
+        msg = "AI generation timed out — try again.";
       }
+      setGenerateStatus({ tone: "error", text: msg, id: Date.now() });
       toast.error(msg);
     } finally {
       setIsGenerating(false);
@@ -308,6 +325,7 @@ function LeadWorkspace() {
           setTone={setTone}
           onGenerate={handleGenerate}
           isGenerating={isGenerating}
+          generateStatus={generateStatus}
           onRewrite={handleRewrite}
         />
         <RightSidebar

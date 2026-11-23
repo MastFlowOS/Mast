@@ -45,6 +45,8 @@ vi.mock("@/hooks/use-mast-api", () => ({
   useLeadTrust: () => ({ data: h.trustData, isLoading: false, isError: false }),
   useOpportunityInsight: () => ({ data: h.insightData, isLoading: false, isError: false }),
   useOpportunityExplanation: () => ({ data: h.explanationData, isLoading: false, isError: false }),
+  useLeadBusinessActivity: () => ({ data: undefined, isLoading: false, isError: false }),
+  useCheckLeadInstagramActivity: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 import { LeftSidebar } from "../LeftSidebar";

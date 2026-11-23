@@ -3657,6 +3657,30 @@ export async function runLeadWebsiteAudit(
   });
 }
 
+// ─── Business Activity & Live Instagram Check ─────────────────────────────────
+
+export type { BusinessActivityReport } from "./businessActivity";
+
+export async function getLeadBusinessActivity(
+  leadId: number,
+): Promise<{ activity: import("./businessActivity").BusinessActivityReport }> {
+  return backendFetch<{ activity: import("./businessActivity").BusinessActivityReport }>(
+    `/v1/intelligence/activity/${leadId}`,
+  );
+}
+
+export async function checkLeadInstagramActivity(
+  leadId: number,
+): Promise<{ activity: import("./businessActivity").BusinessActivityReport }> {
+  return backendFetch<{ activity: import("./businessActivity").BusinessActivityReport }>(
+    `/v1/intelligence/activity/${leadId}/check-ig`,
+    {
+      method: "POST",
+      timeoutMs: 15_000,
+    },
+  );
+}
+
 // ─── Booking Link Sync (Calendly / Cal.com) ───────────────────────────────────
 
 export type BookingProvider = "calcom" | "calendly" | "custom";

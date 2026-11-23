@@ -21,6 +21,10 @@ import {
   Link as LinkIcon,
   Calendar,
   Compass,
+  Activity,
+  RefreshCw,
+  ExternalLink,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Lead } from "@/lib/api";
@@ -32,7 +36,11 @@ import {
   useLeadTrust,
   useUpdateLead,
   useLeadFollowups,
+  useLeadBusinessActivity,
+  useCheckLeadInstagramActivity,
 } from "@/hooks/use-mast-api";
+import { computeBusinessActivity } from "@/lib/businessActivity";
+import { openExternalPopup } from "@/lib/externalPopup";
 import { normalizeInstagram } from "@/lib/instagram";
 import {
   getFieldTrustEntry,
@@ -206,6 +214,7 @@ export function LeftSidebar({
   const [copied, setCopied] = useState<string | null>(null);
   const [contactMethodsOpen, setContactMethodsOpen] = useState(true);
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    businessActivity: true,
     insights: false,
     why: false,
     followups: false,
@@ -326,6 +335,38 @@ export function LeftSidebar({
 
   // AI Opportunity Insight read
   const { data: insight } = useOpportunityInsight(lead.businessId);
+
+  // Business Activity & Instagram Activity read + live check mutation
+  const { data: activityPayload } = useLeadBusinessActivity(lead.id);
+  const checkIgActivity = useCheckLeadInstagramActivity(lead.id);
+  const businessActivity = useMemo(() => {
+    if (activityPayload?.activity) return activityPayload.activity;
+    return computeBusinessActivity({
+      email: lead.email,
+      phone: lead.phone,
+      website: lead.website,
+      instagramHandle: lead.instagramHandle,
+      igFollowers: lead.igFollowers,
+      igLastPost: lead.igLastPost,
+    });
+  }, [
+    activityPayload?.activity,
+    lead.email,
+    lead.phone,
+    lead.website,
+    lead.instagramHandle,
+    lead.igFollowers,
+    lead.igLastPost,
+  ]);
+
+  const handleCheckInstagramActivity = async () => {
+    if (checkIgActivity.isPending) return;
+    try {
+      await checkIgActivity.mutateAsync();
+    } catch {
+      // Non-blocking: UI already shows Open Profile fallback
+    }
+  };
 
   // Extract AI Overview and Suggested Action if present in notes
   let aiOverview = "";
@@ -646,6 +687,243 @@ export function LeftSidebar({
 
       {/* ─── 3. SECONDARY ACCORDIONS ─── */}
       <div className="space-y-2">
+        {/* Accordion 0: Business Activity & Best Outreach Channel */}
+        <div
+          ref={(el) => {
+            sectionRefs.current.businessActivity = el;
+          }}
+          data-testid="business-activity-card"
+          className="rounded-xl border border-border/80 bg-card/40 overflow-hidden"
+        >
+          <button
+            type="button"
+            onClick={() => toggleSection("businessActivity")}
+            className="flex w-full items-center justify-between p-3.5 text-left text-xs font-semibold text-foreground hover:bg-card/60 transition-colors"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Activity className="size-4 text-emerald-400 shrink-0" />
+              <span className="truncate">Business Activity</span>
+              {businessActivity.mostActiveOn && (
+                <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-brand/15 text-brand border border-brand/25 shrink-0">
+                  {businessActivity.mostActiveLabel}
+                </span>
+              )}
+            </div>
+            {openSections.businessActivity ? (
+              <ChevronUp className="size-4 text-muted-foreground shrink-0" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground shrink-0" />
+            )}
+          </button>
+
+          {openSections.businessActivity && (
+            <div className="p-3.5 pt-2.5 border-t border-border/40 space-y-2.5 text-xs">
+              {/* Most Active On / Best Channel Recommendation */}
+              <div className="rounded-xl border border-brand/25 bg-brand/5 p-2.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-brand block">
+                      Most Active On
+                    </span>
+                    <p className="text-xs font-semibold text-foreground mt-0.5 truncate">
+                      {businessActivity.mostActiveLabel}
+                    </p>
+                  </div>
+                  {businessActivity.mostActiveOn && (
+                    <button
+                      type="button"
+                      onClick={() => setChannel(businessActivity.mostActiveOn as Channel)}
+                      disabled={channel === businessActivity.mostActiveOn}
+                      className={
+                        channel === businessActivity.mostActiveOn
+                          ? "px-2 py-1 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0 cursor-default"
+                          : "px-2 py-1 rounded-md text-[10px] font-semibold bg-brand text-white hover:bg-brand/90 transition-colors shrink-0 cursor-pointer"
+                      }
+                    >
+                      {channel === businessActivity.mostActiveOn ? "Selected" : "Use Channel"}
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  {businessActivity.recommendationReason}
+                </p>
+              </div>
+
+              {/* Instagram Activity Checker */}
+              <div className="rounded-xl border border-border/60 bg-background/40 p-2.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Instagram className="size-3.5 text-pink-400 shrink-0" />
+                    <span className="text-[11px] font-semibold text-foreground truncate">
+                      Instagram Activity
+                    </span>
+                  </div>
+                  <span
+                    className={
+                      businessActivity.instagram.status === "very_active" ||
+                      businessActivity.instagram.status === "active"
+                        ? "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0"
+                        : businessActivity.instagram.status === "slow"
+                          ? "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0"
+                          : businessActivity.instagram.status === "inactive" ||
+                              businessActivity.instagram.status === "private"
+                            ? "px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30 shrink-0"
+                            : "px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-muted/60 text-muted-foreground border border-border shrink-0"
+                    }
+                  >
+                    {businessActivity.instagram.statusLabel}
+                  </span>
+                </div>
+
+                {businessActivity.instagram.handle ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                      <div className="rounded-lg border border-border/50 bg-card/40 px-2 py-1.5">
+                        <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground block">
+                          Last Post
+                        </span>
+                        <span className="text-foreground font-medium block truncate mt-0.5">
+                          {businessActivity.instagram.lastPostLabel ?? "Not checked yet"}
+                        </span>
+                      </div>
+                      <div className="rounded-lg border border-border/50 bg-card/40 px-2 py-1.5">
+                        <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground block">
+                          Story
+                        </span>
+                        <span className="text-foreground font-medium flex items-center gap-1 truncate mt-0.5">
+                          {businessActivity.instagram.hasActiveStory === true && (
+                            <span className="size-1.5 rounded-full bg-pink-400 animate-pulse shrink-0" />
+                          )}
+                          <span className="truncate">{businessActivity.instagram.storyLabel}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {(businessActivity.instagram.followersCount !== null ||
+                      businessActivity.instagram.postsCount !== null) && (
+                      <div className="flex items-center gap-3 text-[10px] text-muted-foreground px-0.5">
+                        {businessActivity.instagram.followersCount !== null && (
+                          <span>
+                            <strong className="text-foreground font-semibold">
+                              {businessActivity.instagram.followersCount.toLocaleString()}
+                            </strong>{" "}
+                            followers
+                          </span>
+                        )}
+                        {businessActivity.instagram.postsCount !== null && (
+                          <span>
+                            <strong className="text-foreground font-semibold">
+                              {businessActivity.instagram.postsCount.toLocaleString()}
+                            </strong>{" "}
+                            posts
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {businessActivity.instagram.worthDming === false && (
+                      <p className="text-[10px] text-rose-300/90 bg-rose-500/10 border border-rose-500/20 rounded-lg px-2 py-1.5 leading-snug">
+                        Low IG activity — save time and reach out on Email or Phone instead.
+                      </p>
+                    )}
+
+                    {businessActivity.instagram.liveCheckNote && (
+                      <p className="text-[10px] text-muted-foreground leading-snug">
+                        {businessActivity.instagram.liveCheckNote}
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => void handleCheckInstagramActivity()}
+                        disabled={checkIgActivity.isPending}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 h-7 px-2 rounded-lg border border-border/70 bg-card/60 hover:bg-card text-[11px] font-medium text-foreground transition-colors cursor-pointer disabled:opacity-60"
+                      >
+                        {checkIgActivity.isPending ? (
+                          <>
+                            <Loader2 className="size-3 animate-spin" />
+                            <span>Checking...</span>
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="size-3" />
+                            <span>Check IG</span>
+                          </>
+                        )}
+                      </button>
+                      {businessActivity.instagram.profileUrl && (
+                        <button
+                          type="button"
+                          onClick={() => openExternalPopup(businessActivity.instagram.profileUrl!)}
+                          className="inline-flex items-center justify-center gap-1 h-7 px-2.5 rounded-lg border border-border/70 bg-card/40 hover:bg-card text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                        >
+                          <span>Open IG</span>
+                          <ExternalLink className="size-3" />
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">
+                    No Instagram profile on file for this business.
+                  </p>
+                )}
+              </div>
+
+              {/* Quick Channel Activity Breakdown */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
+                  Channel Signals
+                </span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {businessActivity.channels.map((ch) => (
+                    <button
+                      key={ch.channel}
+                      type="button"
+                      disabled={!ch.available}
+                      onClick={() => setChannel(ch.channel as Channel)}
+                      title={ch.summary}
+                      className={`flex items-center justify-between gap-1.5 rounded-lg border px-2 py-1.5 text-left text-[11px] transition-colors ${
+                        !ch.available
+                          ? "border-border/40 bg-background/20 text-muted-foreground/50 cursor-not-allowed"
+                          : ch.status === "best"
+                            ? "border-brand/40 bg-brand/10 text-foreground hover:bg-brand/15 cursor-pointer"
+                            : "border-border/60 bg-card/30 text-foreground hover:bg-card/60 cursor-pointer"
+                      }`}
+                    >
+                      <span className="truncate font-medium">{ch.label}</span>
+                      <span
+                        className={`text-[9px] font-bold uppercase shrink-0 ${
+                          ch.status === "best"
+                            ? "text-brand"
+                            : ch.status === "active"
+                              ? "text-emerald-400"
+                              : ch.status === "weak"
+                                ? "text-rose-400"
+                                : ch.status === "available"
+                                  ? "text-muted-foreground"
+                                  : "text-muted-foreground/40"
+                        }`}
+                      >
+                        {ch.status === "best"
+                          ? "Best"
+                          : ch.status === "active"
+                            ? "Active"
+                            : ch.status === "weak"
+                              ? "Slow"
+                              : ch.status === "available"
+                                ? "Ready"
+                                : "None"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Accordion 1: Business Insights */}
         <div
           ref={(el) => {

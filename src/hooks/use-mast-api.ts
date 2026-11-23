@@ -102,6 +102,9 @@ import {
   type WebsiteAuditResult,
   getLeadWebsiteAudit,
   runLeadWebsiteAudit,
+  type BusinessActivityReport,
+  getLeadBusinessActivity,
+  checkLeadInstagramActivity,
   type BookingSettings,
   getBookingSettings,
   saveBookingSettings,
@@ -151,6 +154,7 @@ export const queryKeys = {
   team: ["mast", "team"] as const,
   outreachPlaybooks: ["mast", "outreach", "playbooks"] as const,
   leadWebsiteAudit: (leadId: number | string | undefined) => ["mast", "intelligence", "audit", String(leadId)] as const,
+  leadBusinessActivity: (leadId: number | string | undefined) => ["mast", "intelligence", "activity", String(leadId)] as const,
   bookingSettings: ["mast", "booking", "settings"] as const,
   suppressions: ["mast", "safety", "suppressions"] as const,
   leadSafety: (leadId: number | string | undefined) => ["mast", "safety", "lead", String(leadId)] as const,
@@ -1086,6 +1090,31 @@ export function useRunLeadWebsiteAudit(leadId: number | undefined) {
     mutationFn: (options?: { skipScreenshot?: boolean }) => runLeadWebsiteAudit(leadId!, options),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.leadWebsiteAudit(leadId), data);
+    },
+  });
+}
+
+// ─── Business Activity & Live Instagram Check ────────────────────────────────
+
+export function useLeadBusinessActivity(leadId: number | undefined, enabled = true) {
+  return useQuery<{ activity: BusinessActivityReport }>({
+    queryKey: queryKeys.leadBusinessActivity(leadId),
+    queryFn: () => getLeadBusinessActivity(leadId!),
+    enabled: Boolean(leadId) && enabled,
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+}
+
+export function useCheckLeadInstagramActivity(leadId: number | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => checkLeadInstagramActivity(leadId!),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.leadBusinessActivity(leadId), data);
+      if (leadId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.lead(leadId) });
+      }
     },
   });
 }

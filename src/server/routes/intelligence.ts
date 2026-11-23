@@ -28,6 +28,12 @@ import {
   collectWebsiteAuditInputs,
   type WebsiteAuditResult,
 } from "../../lib/websiteAudit.js";
+import {
+  computeBusinessActivity,
+  fetchLiveInstagramActivity,
+  formatDaysAgoLabel,
+  type LiveInstagramCheckResult,
+} from "../../lib/businessActivity.js";
 
 export const intelligenceRouter = Router();
 
@@ -1612,6 +1618,172 @@ intelligenceRouter.post("/audit/:leadId", requireAuth, async (req, res, next) =>
     };
 
     return res.json({ audit: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Business Activity & Live Instagram Check ─────────────────────────────────
+// In-memory 30-minute cache for live IG checks per lead so switching back and
+// forth doesn't hammer Instagram's public endpoint.
+const LIVE_IG_CACHE_TTL_MS = 30 * 60 * 1000;
+const liveIgCache = new Map<string, { expiresAt: number; result: LiveInstagramCheckResult }>();
+
+async function loadLeadAndBusinessForActivity(userId: string, leadId: number) {
+  const { data: lead, error: leadErr } = await supabaseAdmin
+    .from("leads")
+    .select(
+      "id, business_id, email, phone, website, instagram_handle, linkedin_handle, ig_followers, ig_last_post, ig_bio",
+    )
+    .eq("id", leadId)
+    .eq("user_id", userId)
+    .single();
+
+  if (leadErr || !lead) return null;
+
+  let business: Record<string, any> | null = null;
+  if (lead.business_id) {
+    const { data: biz } = await supabaseAdmin
+      .from("businesses")
+      .select(
+        "id, email, phone, website, instagram, facebook, linkedin, reviews_count, reviews_rating, website_is_weak, blog, signals",
+      )
+      .eq("id", lead.business_id)
+      .maybeSingle();
+    business = biz ?? null;
+  }
+
+  return { lead, business };
+}
+
+function buildActivityFromRecords(
+  lead: Record<string, any>,
+  business: Record<string, any> | null,
+  liveIg: LiveInstagramCheckResult | null,
+) {
+  const signals =
+    business?.signals && typeof business.signals === "object"
+      ? (business.signals as Record<string, any>)
+      : {};
+  const blogObj =
+    business?.blog && typeof business.blog === "object"
+      ? (business.blog as Record<string, any>)
+      : null;
+
+  return computeBusinessActivity({
+    email: lead.email ?? business?.email ?? null,
+    phone: lead.phone ?? business?.phone ?? null,
+    website: lead.website ?? business?.website ?? null,
+    instagramHandle: lead.instagram_handle ?? business?.instagram ?? null,
+    igFollowers: lead.ig_followers ?? signals.ig_followers ?? null,
+    igLastPost: lead.ig_last_post ?? null,
+    igLastPostDays:
+      typeof signals.ig_last_post_days === "number" ? signals.ig_last_post_days : null,
+    liveIg,
+    facebook: business?.facebook ?? null,
+    linkedin: lead.linkedin_handle ?? business?.linkedin ?? null,
+    reviewsCount:
+      typeof business?.reviews_count === "number" ? business.reviews_count : null,
+    reviewsRating:
+      typeof business?.reviews_rating === "number" ? business.reviews_rating : null,
+    websiteIsWeak:
+      typeof business?.website_is_weak === "boolean" ? business.website_is_weak : null,
+    hasBlog: Boolean(blogObj?.has_blog),
+  });
+}
+
+/**
+ * GET /v1/intelligence/activity/:leadId
+ *
+ * Computes the Business Activity report ("Most Active On" recommended channel +
+ * Instagram last-post & story activity status) from verified lead/business data
+ * and any recent live IG check cached for this lead.
+ */
+intelligenceRouter.get("/activity/:leadId", requireAuth, readLimiter, async (req, res, next) => {
+  try {
+    const { workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId)) {
+      return res.status(400).json({ error: "Invalid leadId" });
+    }
+
+    const loaded = await loadLeadAndBusinessForActivity(userId, leadId);
+    if (!loaded) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    const cacheKey = `${userId}:${leadId}`;
+    const cached = liveIgCache.get(cacheKey);
+    const liveIg = cached && cached.expiresAt > Date.now() ? cached.result : null;
+
+    const activity = buildActivityFromRecords(loaded.lead, loaded.business, liveIg);
+    return res.json({ activity });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /v1/intelligence/activity/:leadId/check-ig
+ *
+ * Runs a live public Instagram check for the lead's IG handle to verify
+ * when they last posted, follower/post counts, and active story metadata
+ * (when exposed by Instagram). Persists fresh last-post & follower info back
+ * to the lead so future views and AI Writer use it automatically.
+ */
+intelligenceRouter.post("/activity/:leadId/check-ig", requireAuth, readLimiter, async (req, res, next) => {
+  try {
+    const { workspaceOwnerId: userId } = await resolveUserPlanAndProfession(req.user!.id);
+    const leadId = Number(req.params.leadId);
+    if (!Number.isFinite(leadId)) {
+      return res.status(400).json({ error: "Invalid leadId" });
+    }
+
+    const loaded = await loadLeadAndBusinessForActivity(userId, leadId);
+    if (!loaded) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    const igHandle = (loaded.lead.instagram_handle || loaded.business?.instagram || "").trim();
+    if (!igHandle) {
+      const activity = buildActivityFromRecords(loaded.lead, loaded.business, null);
+      return res.json({ activity });
+    }
+
+    const liveIg = await fetchLiveInstagramActivity(igHandle);
+    const cacheKey = `${userId}:${leadId}`;
+    liveIgCache.set(cacheKey, {
+      expiresAt: Date.now() + LIVE_IG_CACHE_TTL_MS,
+      result: liveIg,
+    });
+
+    // Persist verified live fields back to the lead so AI outreach & future loads benefit
+    if (liveIg.ok) {
+      const leadPatch: { ig_last_post?: string; ig_followers?: string; ig_bio?: string } = {};
+      if (liveIg.lastPostDaysAgo !== null) {
+        leadPatch.ig_last_post = formatDaysAgoLabel(liveIg.lastPostDaysAgo) ?? `${liveIg.lastPostDaysAgo}d ago`;
+      }
+      if (liveIg.followersCount !== null) {
+        leadPatch.ig_followers = String(liveIg.followersCount);
+      }
+      if (liveIg.bio && !loaded.lead.ig_bio) {
+        leadPatch.ig_bio = liveIg.bio;
+      }
+      if (Object.keys(leadPatch).length > 0) {
+        try {
+          await supabaseAdmin
+            .from("leads")
+            .update(leadPatch)
+            .eq("id", leadId)
+            .eq("user_id", userId);
+        } catch (persistErr) {
+          console.warn("[intelligence] live IG lead update skipped:", persistErr);
+        }
+      }
+    }
+
+    const activity = buildActivityFromRecords(loaded.lead, loaded.business, liveIg);
+    return res.json({ activity });
   } catch (err) {
     next(err);
   }

@@ -1300,9 +1300,47 @@ fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
   }}
 
   function checkReelTs(reelTs) {{
-    if (typeof reelTs === "number" && reelTs > 1_000_000_000) {{
+    if (typeof reelTs !== "number" || !Number.isFinite(reelTs)) return;
+    if (reelTs === 0) {{
+      if (state.hasActiveStory === null) state.hasActiveStory = false;
+      return;
+    }}
+    if (reelTs > 1_000_000_000) {{
       const ageSec = Math.floor(Date.now() / 1000) - reelTs;
-      state.hasActiveStory = ageSec >= 0 && ageSec <= 86400;
+      state.hasActiveStory = ageSec >= -300 && ageSec <= 86400;
+    }}
+  }}
+
+  function isHighlightReel(reel) {{
+    if (!reel || typeof reel !== "object") return true;
+    const idStr = String(reel.id || reel.reel_id || "").toLowerCase();
+    if (idStr.startsWith("highlight:")) return true;
+    const rType = typeof reel.reel_type === "string" ? reel.reel_type.toLowerCase() : "";
+    if (rType && rType !== "user_reel") return true;
+    if (typeof reel.title === "string" && reel.title.trim().length > 0) return true;
+    if (reel.cover_media) return true;
+    return false;
+  }}
+
+  function inspectUserStoryReel(reel) {{
+    if (!reel || typeof reel !== "object" || isHighlightReel(reel)) return;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (typeof reel.expiring_at === "number" && reel.expiring_at > 1_000_000_000) {{
+      state.hasActiveStory = reel.expiring_at > nowSec;
+      return;
+    }}
+    if (typeof reel.latest_reel_media === "number") {{
+      checkReelTs(reel.latest_reel_media);
+      return;
+    }}
+    if (Array.isArray(reel.items)) {{
+      const hasFreshItem = reel.items.some((item) => {{
+        if (!item || typeof item !== "object") return false;
+        if (typeof item.expiring_at === "number" && item.expiring_at > nowSec) return true;
+        const ts = typeof item.taken_at === "number" ? item.taken_at : item.taken_at_timestamp;
+        return typeof ts === "number" && ts > 1_000_000_000 && nowSec - ts >= -300 && nowSec - ts <= 86400;
+      }});
+      state.hasActiveStory = hasFreshItem;
     }}
   }}
 
@@ -1316,11 +1354,11 @@ fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
     return null;
   }}
 
-  function scanJson(node, depth = 0, inTargetTimeline = false) {{
+  function scanJson(node, depth = 0, inTargetTimeline = false, inStoryOrHighlight = false) {{
     if (!node || typeof node !== "object" || depth > 12) return;
     if (Array.isArray(node)) {{
       for (let i = 0; i < node.length && i < 40; i++) {{
-        scanJson(node[i], depth + 1, inTargetTimeline);
+        scanJson(node[i], depth + 1, inTargetTimeline, inStoryOrHighlight);
       }}
       return;
     }}
@@ -1344,16 +1382,17 @@ fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
       }}
       if (typeof node.latest_reel_media === "number") checkReelTs(node.latest_reel_media);
       if (typeof node.has_active_story === "boolean") state.hasActiveStory = node.has_active_story;
+      if (node.reel && typeof node.reel === "object") inspectUserStoryReel(node.reel);
     }}
 
-    // 2. Match post / media node with taken_at or taken_at_timestamp
+    // 2. Match post / media node with taken_at or taken_at_timestamp (skip story/highlight items)
     const postTs =
       typeof node.taken_at === "number"
         ? node.taken_at
         : typeof node.taken_at_timestamp === "number"
           ? node.taken_at_timestamp
           : null;
-    if (postTs !== null) {{
+    if (postTs !== null && !inStoryOrHighlight) {{
       const ownerUname =
         (node.user && typeof node.user.username === "string" && node.user.username.toLowerCase()) ||
         (node.owner && typeof node.owner.username === "string" && node.owner.username.toLowerCase()) ||
@@ -1372,20 +1411,20 @@ fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
       }}
     }}
 
-    // 3. Match story / reel tray objects
+    // 3. Match active 24h story reel objects (strictly ignore Story Highlights)
     if (Array.isArray(node.reels_media)) {{
       for (const reel of node.reels_media) {{
+        if (isHighlightReel(reel)) continue;
         const rUser = reel && reel.user;
         const rUname = rUser && typeof rUser.username === "string" ? rUser.username.toLowerCase() : "";
         const rId = String((reel && reel.id) || (rUser && (rUser.pk || rUser.id)) || "");
         if (rUname === TARGET_HANDLE || (state.userId && rId === state.userId)) {{
-          if (Array.isArray(reel.items)) state.hasActiveStory = reel.items.length > 0;
-          if (typeof reel.latest_reel_media === "number") checkReelTs(reel.latest_reel_media);
+          inspectUserStoryReel(reel);
         }}
       }}
     }}
 
-    // 4. Recurse into child keys (mark timeline containers so posts without nested owner still match)
+    // 4. Recurse into child keys (mark timeline containers & story/highlight containers)
     const keys = Object.keys(node);
     for (let i = 0; i < keys.length && i < 60; i++) {{
       const k = keys[i];
@@ -1395,7 +1434,13 @@ fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
         inTargetTimeline ||
         k === "edge_owner_to_timeline_media" ||
         k === "xdt_api__v1__feed__user_timeline_graphql_connection";
-      scanJson(v, depth + 1, nextTimeline);
+      const nextStoryOrHighlight =
+        inStoryOrHighlight ||
+        k === "reels_media" ||
+        k === "highlights" ||
+        k === "edge_highlight_reels" ||
+        k === "reel";
+      scanJson(v, depth + 1, nextTimeline, nextStoryOrHighlight);
     }}
   }}
 
@@ -1508,19 +1553,57 @@ fn build_profile_checker_init_script(request_id: &str, handle: &str) -> String {
         if (state.isPrivate === null && /this account is private/i.test(bodyText)) {{
           state.isPrivate = true;
         }}
-        // Instagram draws the active Story gradient ring on a <canvas> around the profile avatar
+        // Strict DOM fallback for active Story ring on the MAIN profile avatar ONLY
+        // (never Story Highlights, and never an empty or aria-disabled avatar <canvas>)
         if (state.hasActiveStory === null) {{
-          const canvases = header.querySelectorAll("canvas");
-          let hasRing = false;
-          for (const c of canvases) {{
-            const rect = c.getBoundingClientRect();
-            if (rect.width >= 50 && rect.height >= 50) {{
-              hasRing = true;
+          const imgs = header.querySelectorAll("img");
+          let avatarImg = null;
+          for (const img of imgs) {{
+            if (img.closest('a[href*="/stories/highlights/"], ul, [aria-label*="Highlight" i]')) continue;
+            const alt = (img.getAttribute("alt") || "").toLowerCase();
+            const r = img.getBoundingClientRect();
+            if (r.width >= 100 && r.height >= 100 && (alt.includes("profile picture") || alt.includes(TARGET_HANDLE))) {{
+              avatarImg = img;
               break;
             }}
           }}
-          if (hasRing) {{
-            state.hasActiveStory = true;
+          if (avatarImg) {{
+            const avatarBtn = avatarImg.closest('[role="button"], button, a[href*="/stories/"]');
+            const btnHref = (avatarBtn && avatarBtn.getAttribute("href")) || "";
+            if (!avatarBtn || btnHref.includes("/stories/highlights/")) {{
+              state.hasActiveStory = false;
+            }} else if (avatarBtn.getAttribute("aria-disabled") === "true") {{
+              state.hasActiveStory = false;
+            }} else {{
+              const ringCanvas = Array.from(avatarBtn.querySelectorAll("canvas")).find((c) => {{
+                const rect = c.getBoundingClientRect();
+                return rect.width >= 110 && rect.height >= 110;
+              }});
+              if (ringCanvas) {{
+                let painted = false;
+                try {{
+                  const ctx = ringCanvas.getContext("2d");
+                  if (ctx && ringCanvas.width > 0 && ringCanvas.height > 0) {{
+                    const w = ringCanvas.width;
+                    const h = ringCanvas.height;
+                    const stripH = Math.max(1, Math.floor(h * 0.14));
+                    const d = ctx.getImageData(Math.floor(w * 0.5), 0, 1, stripH).data;
+                    for (let i = 3; i < d.length; i += 4) {{
+                      if (d[i] > 20) {{
+                        painted = true;
+                        break;
+                      }}
+                    }}
+                  }}
+                }} catch (_) {{
+                  painted = avatarBtn.getAttribute("aria-disabled") === "false";
+                }}
+                state.hasActiveStory = painted;
+              }} else {{
+                const isExplicitStoryLink = btnHref.toLowerCase().includes(`/stories/${{TARGET_HANDLE}}`);
+                state.hasActiveStory = isExplicitStoryLink || avatarBtn.getAttribute("aria-disabled") === "false";
+              }}
+            }}
           }}
         }}
       }}
